@@ -24,11 +24,13 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot" 
+VERCEL_URL = os.getenv("VERCEL_URL") # Vercel automatically provides this, or set it in Env
 
 if not BOT_TOKEN or not MONGO_URI:
     print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
     sys.exit(1)
 
+# ✅ 5 Channels Supported
 CHANNELS = {
     "1": "-1003952628014",
     "2": "-1003758252316",
@@ -49,15 +51,13 @@ try:
     mongo_client = MongoClient(MONGO_URI)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
+    states_col = db["bot_states"]  # ✅ State loss se bachne ke liye naya collection
     print("✅ MongoDB Connected Successfully!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
     sys.exit(1)
 
-USER_STATES = {}
 app = Flask(__name__)
-
-# --- PTB APPLICATION SETUP ---
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 
 # --- HELPER FUNCTIONS ---
@@ -73,8 +73,7 @@ def get_short_link(api_name, long_url):
             res_text = response.text.strip()
             if "https://" in res_text or "http://" in res_text:
                 return res_text
-            res_json = response.json()
-            return res_json.get("shortenedUrl", long_url)
+            return response.json().get("shortenedUrl", long_url)
     except Exception as e:
         print(f"❌ Shortener Error ({api_name}): {e}", flush=True)
     return long_url
@@ -107,6 +106,17 @@ def update_user_to_verified(user_id):
         upsert=True
     )
 
+def trigger_background_loop(user_id):
+    """Vercel Timeout se bachne ke liye bot khud ko hi dubara trigger karta hai background me"""
+    if VERCEL_URL:
+        url = f"https://{VERCEL_URL}/background-task"
+        try:
+            requests.post(url, json={"user_id": user_id}, timeout=1)
+        except requests.exceptions.ReadTimeout:
+            pass # Timeout intentional hai taaki request asynchronusly chalti rahe
+        except Exception as e:
+            print(f"⚠️ Background trigger failed: {e}")
+
 # --- TEXT MESSAGES HANDLER ---
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -125,32 +135,20 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 user_record = users_col.find_one({"_id": user_id, "token": raw_arg})
                 if user_record:
                     update_user_to_verified(user_id)
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text="✅ **Verification Successful!**\n\nAap agle **8 Ghante** ke liye verified hain. Ab aap kisi bhi video link par click karke access kar sakte hain! 🎉"
-                    )
+                    await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\nAap agle **8 Ghante** ke liye verified hain. 🎉")
                 else:
-                    await bot.send_message(chat_id=chat_id, text="❌ Invalid ya Expired verification link! Kripya fir se koshish karein.")
+                    await bot.send_message(chat_id=chat_id, text="❌ Invalid ya Expired verification link!")
                 return
 
             is_verified, next_api = check_user_verification(user_id)
             if not is_verified:
                 unique_token = generate_random_token()
-                users_col.update_one(
-                    {"_id": user_id},
-                    {"$set": {"token": unique_token, "status": "unverified", "current_api": next_api}},
-                    upsert=True
-                )
+                users_col.update_one({"_id": user_id}, {"$set": {"token": unique_token, "status": "unverified", "current_api": next_api}}, upsert=True)
                 destination_url = f"https://t.me/{BOT_USERNAME}?start={unique_token}"
                 shortlink = get_short_link(next_api, destination_url)
                 
                 keyboard = [[InlineKeyboardButton("🔐 Verify Here", url=shortlink)]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ **Access Denied!**\n\nAapko aage badhne ke liye verify karna hoga. Yeh verification **8 Ghante** ke liye valid rahega.\n\n👉 **Network Used:** `{next_api.upper()}`",
-                    reply_markup=reply_markup
-                )
+                await bot.send_message(chat_id=chat_id, text=f"⚠️ **Access Denied!**\nVerify karein (8 Hours Validity).\n👉 **Network:** `{next_api.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard))
                 return
 
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
@@ -166,16 +164,22 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_videos = len(video_list)
                 videos_per_part = math.ceil(total_videos / total_parts)
                 
-                USER_STATES[user_id] = {
-                    "video_list": video_list,
-                    "target_ch": target_ch,
-                    "videos_per_part": videos_per_part,
-                    "current_part": 1,
-                    "total_parts": total_parts,
-                    "total_videos": total_videos
-                }
+                # ✅ Database me State save karo (Permanent)
+                states_col.update_one(
+                    {"_id": user_id},
+                    {"$set": {
+                        "chat_id": chat_id,
+                        "video_list": video_list,
+                        "target_ch": target_ch,
+                        "videos_per_part": videos_per_part,
+                        "current_part": 1,
+                        "total_parts": total_parts,
+                        "sent_in_current_part": 0
+                    }},
+                    upsert=True
+                )
                 await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Videos: `{total_videos}`\nTotal Parts: `{total_parts}`\n\n📦 **Part 1 shuru ho raha hai...**")
-                await send_video_batch(chat_id, bot, user_id)
+                trigger_background_loop(user_id)
                 
             elif len(extracted_args) == 2:
                 file_id, ch_num = extracted_args
@@ -183,124 +187,138 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 if target_ch:
                     await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=int(file_id))
             else:
-                await bot.send_message(chat_id=chat_id, text="👋 **Welcome!**\n\nVideos paane ke liye kisi video link par click karke aao!")
+                await bot.send_message(chat_id=chat_id, text="👋 **Welcome!**\nVideos paane ke liye kisi video link par click karke aao!")
             return
     except Exception as err:
         print(f"❌ Error in text handler: {err}", flush=True)
 
-# --- BUTTON CLICK (CALLBACK QUERY) HANDLER ---
+# --- BUTTON CLICK HANDLER ---
 async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
-    chat_id = query.message.chat_id
     await query.answer()
     
     is_verified, _ = check_user_verification(user_id)
     if not is_verified:
-        await query.message.reply_text("⏰ Aapka 8 ghante ka session khatam ho gaya! Kripya dobara verify karne ke liye /start likhein.")
+        await query.message.reply_text("⏰ Aapka session khatam ho gaya! Kripya dobara verify karne ke liye /start likhein.")
         return
 
     try:
         if query.data == "get_next_part":
-            if user_id not in USER_STATES:
-                await query.message.reply_text("❌ Session expired! Kripya video link par dobara click karein.")
+            state = states_col.find_one({"_id": user_id})
+            if not state:
+                await query.message.reply_text("❌ Session expired! Link par dobara click karein.")
                 return
-            state = USER_STATES[user_id]
+                
             current_part = state["current_part"] + 1
             if current_part > state["total_parts"]:
                 await query.message.reply_text("🎉 Aapke saare Parts complete ho chuke hain!")
-                del USER_STATES[user_id]
+                states_col.delete_one({"_id": user_id})
                 return
-            state["current_part"] = current_part
+                
+            states_col.update_one({"_id": user_id}, {"$set": {"current_part": current_part, "sent_in_current_part": 0}})
             await query.message.reply_text(f"📦 **Part {current_part} shuru ho raha hai...**")
-            await send_video_batch(chat_id, context.bot, user_id)
+            trigger_background_loop(user_id)
     except Exception as err:
         print(f"❌ Error in button handler: {err}", flush=True)
 
-# --- BATCH SENDING LOGIC ---
-async def send_video_batch(chat_id, bot, user_id):
-    state = USER_STATES[user_id]
+# --- MONGO-BASED BACKGROUND BATCH SENDING ---
+async def send_video_chunk_logic(user_id):
+    """Ek baar me sirf 5 videos bhejega taaki Vercel timeout na kare"""
+    state = states_col.find_one({"_id": user_id})
+    if not state:
+        return
+
+    chat_id = state["chat_id"]
     video_list = state["video_list"]
     target_ch = state["target_ch"]
     current_part = state["current_part"]
     videos_per_part = state["videos_per_part"]
     total_parts = state["total_parts"]
+    sent_in_current_part = state["sent_in_current_part"]
+
+    start_idx = ((current_part - 1) * videos_per_part) + sent_in_current_part
+    end_part_idx = (current_part * videos_per_part)
     
-    start_idx = (current_part - 1) * videos_per_part
-    end_idx = start_idx + videos_per_part
-    current_batch = video_list[start_idx:end_idx]
-    
-    if not current_batch:
-        await bot.send_message(chat_id=chat_id, text="🎉 Saari videos khatam ho chuki hain!")
-        del USER_STATES[user_id]
+    # Is chunk me kitni videos bhejni hain (Max 5)
+    chunk_videos = video_list[start_idx:min(end_part_idx, len(video_list))][:5]
+
+    if not chunk_videos:
+        # Part complete ho gaya
+        next_part_num = current_part + 1
+        async with ptb_app:
+            if next_part_num <= total_parts and end_part_idx < len(video_list):
+                keyboard = [[InlineKeyboardButton(f"➡️ Get Part {next_part_num}", callback_data="get_next_part")]]
+                await ptb_app.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⏸️ **Part {current_part} complete ho gaya hai!**\n\nAage ki videos (Part {next_part_num}) paane ke liye niche button par click karein 👇",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                await ptb_app.bot.send_message(chat_id=chat_id, text="🎉 **SARA VIDEO COMPLETE HO GAYA!** ✅")
+                states_col.delete_one({"_id": user_id})
         return
 
-    for msg_id in current_batch:
-        try:
-            await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=msg_id)
-            await asyncio.sleep(0.5) 
-        except Exception as copy_err:
-            print(f"❌ Msg {msg_id} failed: {copy_err}", flush=True)
-            
-    next_part_num = current_part + 1
-    if next_part_num <= total_parts and end_idx < len(video_list):
-        keyboard = [[InlineKeyboardButton(f"➡️ Get Part {next_part_num}", callback_data="get_next_part")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"⏸️ **Part {current_part} complete ho gaya hai ({len(current_batch)} Videos sent)!**\n\nAage ki videos (Part {next_part_num}) paane ke liye niche button par click karein 👇",
-            reply_markup=reply_markup
-        )
-    else:
-        await bot.send_message(chat_id=chat_id, text=f"🎉 **SARA VIDEO COMPLETE HO GAYA!**\n\nSabhie {total_parts} parts kamyabi se bhej diye gaye hain. ✅")
-        if user_id in USER_STATES:
-            del USER_STATES[user_id]
+    # Send 5 videos
+    async with ptb_app:
+        for msg_id in chunk_videos:
+            try:
+                await ptb_app.bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=msg_id)
+                sent_in_current_part += 1
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f"❌ Msg {msg_id} failed: {e}")
+                sent_in_current_part += 1
+
+    # Save progress to MongoDB
+    states_col.update_one({"_id": user_id}, {"$set": {"sent_in_current_part": sent_in_current_part}})
+    
+    # Self-Trigger for next 5 videos
+    trigger_background_loop(user_id)
 
 # --- INITIALIZE HANDLERS ---
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
-# --- SERVERLESS-OPTIMIZED WEBHOOK PROCESSING ---
-async def process_telegram_update(update_json):
-    """Event Loop initialize karke task processing safe banata hai"""
-    async with ptb_app:
-        update = Update.de_json(update_json, ptb_app.bot)
-        await ptb_app.process_update(update)
-
+# --- FLASK ENDPOINTS ---
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is alive via Serverless Webhooks!", 200
+    return "Bot is active via Permanent Serverless Architecture!", 200
 
-# Favicon handler taaki Vercel invoke failed na ho
 @app.route('/favicon.ico', methods=['GET'])
 def favicon():
     return "", 204
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if request.method == "POST":
-        try:
-            update_json = request.get_json(force=True)
-            
-            # Har request ke liye safe event loop context execution
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(process_telegram_update(update_json))
-            loop.close()
-            
-            return jsonify({"status": "success"}), 200
-        except Exception as e:
-            print(f"💥 Webhook Handler Error: {e}")
-            traceback.print_exc()
-            return jsonify({"status": "error", "message": str(e)}), 500
-    return "Invalid Method", 400
+    try:
+        update_json = request.get_json(force=True)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(ptb_app.initialize())
+        update = Update.de_json(update_json, ptb_app.bot)
+        loop.run_until_complete(ptb_app.process_update(update))
+        loop.close()
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# Kisi bhi aur galat route par crash na ho uske liye wildcard route
+@app.route('/background-task', methods=['POST'])
+def background_task():
+    """Background loop context handler"""
+    data = request.get_json(force=True)
+    user_id = data.get("user_id")
+    if user_id:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(send_video_chunk_logic(user_id))
+        loop.close()
+    return jsonify({"status": "queued"}), 200
+
 @app.errorhandler(404)
 def page_not_found(e):
-    return jsonify({"status": "ignored", "message": "Route not handled"}), 200
+    return jsonify({"status": "ignored"}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-    
