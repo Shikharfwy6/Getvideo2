@@ -26,10 +26,9 @@ MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot" 
 
 if not BOT_TOKEN or not MONGO_URI:
-    print("💥 Critical Error: BOT_TOKEN ya MONGO_URI Environment Variables me missing hai!", flush=True)
+    print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
     sys.exit(1)
 
-# ✅ Updated to support 5 Channels
 CHANNELS = {
     "1": "-1003952628014",
     "2": "-1003758252316",
@@ -58,8 +57,7 @@ except Exception as e:
 USER_STATES = {}
 app = Flask(__name__)
 
-# --- PTB APPLICATION SETUP FOR WEBHOOK ---
-# Vercel restart hone par ya context crash hone se bachane ke liye global application use karenge
+# --- PTB APPLICATION SETUP ---
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 
 # --- HELPER FUNCTIONS ---
@@ -263,33 +261,35 @@ ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
-# --- FLASK WEBHOOK ROUTES ---
+# --- SERVERLESS-OPTIMIZED WEBHOOK PROCESSING ---
+async def process_telegram_update(update_json):
+    """Event Loop initialize karke task processing safe banata hai"""
+    async with ptb_app:
+        update = Update.de_json(update_json, ptb_app.bot)
+        await ptb_app.process_update(update)
+
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is alive and running via Webhooks on Vercel!"
+    return "Bot is alive via Serverless Webhooks!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Telegram updates receive karne ke liye endpoint"""
     if request.method == "POST":
         try:
             update_json = request.get_json(force=True)
-            update = Update.de_json(update_json, ptb_app.bot)
             
-            # Asynchronous logic ko handle karne ke liye event loop process run karna
+            # Har request ke liye safe event loop context execution
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(ptb_app.initialize())
-            loop.run_until_complete(ptb_app.process_update(update))
+            loop.run_until_complete(process_telegram_update(update_json))
             loop.close()
             
             return jsonify({"status": "success"}), 200
         except Exception as e:
-            print(f"💥 Webhook Process Error: {e}")
+            print(f"💥 Webhook Handler Error: {e}")
             traceback.print_exc()
             return jsonify({"status": "error", "message": str(e)}), 500
-    return "Invalid Request", 400
+    return "Invalid Method", 400
 
 if __name__ == '__main__':
-    # Yeh tab chalega jab aap ise locally chala rahe hon
     app.run(host='0.0.0.0', port=5000)
