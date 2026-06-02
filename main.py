@@ -270,7 +270,12 @@ async def process_telegram_update(update_json):
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is alive via Serverless Webhooks!"
+    return "Bot is alive via Serverless Webhooks!", 200
+
+# Favicon handler taaki Vercel invoke failed na ho
+@app.route('/favicon.ico', methods=['GET'])
+def favicon():
+    return "", 204
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -291,5 +296,11 @@ def webhook():
             return jsonify({"status": "error", "message": str(e)}), 500
     return "Invalid Method", 400
 
+# Kisi bhi aur galat route par crash na ho uske liye wildcard route
+@app.errorhandler(404)
+def page_not_found(e):
+    return jsonify({"status": "ignored", "message": "Route not handled"}), 200
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+    
