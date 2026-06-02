@@ -1,0 +1,35 @@
+name: Telegram Batch Bot Runner
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Har 5 ghante me automatic workflow ko trigger karega taaki bot down na ho
+    - cron: '0 */5 * * *'
+  workflow_dispatch: # Isse aap manual bhi GitHub se 'Run workflow' par click karke start kar sakte hain
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip' # Dependencies fast install karne ke liye cache use karega
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Bot Script
+      timeout-minutes: 340 # 5 ghante 40 minute baad yeh job ko safe close karega taaki agla cron sahi se start ho sake
+      run: |
+        python main.py
+        
