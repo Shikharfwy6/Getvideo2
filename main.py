@@ -223,8 +223,8 @@ def telegram_webhook():
         print(f"💥 Webhook Error: {e}", flush=True)
         return jsonify({"status": "error"}), 500
 
-# ⚠️ VERCEL REQ: Yeh line serverless function ke handler routing ke liye compulsory hai
+# Vercel ko serverless instantiation ke liye yeh handler chahiye hota hai
 app_wsgi = app
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=7860)
+    app.run(host='0.0.0.0', port=5000)
