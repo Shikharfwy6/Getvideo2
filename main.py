@@ -202,26 +202,34 @@ ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
-@app.route('/', methods=['GET'])
-def index():
-    return "Vercel Serverless Telegram Bot Engine Live!", 200
-
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
-    try:
-        update_json = request.get_json(force=True)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        ptb_app._initialized = True
-        ptb_app.bot._initialized = True
-        
-        update = Update.de_json(update_json, ptb_app.bot)
-        loop.run_until_complete(ptb_app.process_update(update))
-        return jsonify({"status": "success"}), 200
-    except Exception as e:
-        print(f"💥 Webhook Error: {e}", flush=True)
-        return jsonify({"status": "error"}), 500
+    global loop
+    if request.method == "POST":
+        try:
+            update_json = request.get_json(force=True)
+            
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+            ptb_app._initialized = True
+            ptb_app.bot._initialized = True
+            
+            update = Update.de_json(update_json, ptb_app.bot)
+            
+            # 🛠️ FIX: create_task ki jagah run_until_complete me AWAIT karenge
+            # Isse Vercel tab tak freeze nahi hoga jab tak bot reply send nahi kar deta!
+            loop.run_until_complete(ptb_app.process_update(update))
+            
+            # Message process hone ke BAAD Telegram ko safe response bhejo
+            return jsonify({"status": "success"}), 200
+            
+        except Exception as e:
+            print(f"💥 Webhook Error: {e}", flush=True)
+            traceback.print_exc()
+            return jsonify({"status": "error"}), 200 # Tab bhi 200 do taaki Telegram block na kare
+    return "Method Not Allowed", 400
 
 # Vercel ko serverless instantiation ke liye yeh handler chahiye hota hai
 app_wsgi = app
