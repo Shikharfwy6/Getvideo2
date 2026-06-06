@@ -8,15 +8,7 @@
   ],
   "routes": [
     {
-      "src": "/favicon.ico",
-      "status": 204
-    },
-    {
-      "src": "/webhook",
-      "dest": "main.py"
-    },
-    {
-      "src": "/",
+      "src": "/(.*)",
       "dest": "main.py"
     }
   ]
