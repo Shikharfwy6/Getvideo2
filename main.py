@@ -14,26 +14,15 @@ from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
 
-# --- PRODUCTION LOGGING ---
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    stream=sys.stdout
-)
+# --- LOGGING ---
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO, stream=sys.stdout)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
-# --- CONFIGURATIONS FROM ENV ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot"
 
-if not BOT_TOKEN or not MONGO_URI:
-    print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
-    sys.exit(1)
-
-# ✅ 5 Channels Support
 CHANNELS = {
     "1": "-1003952628014",
     "2": "-1003758252316",
@@ -49,33 +38,25 @@ SHORTENERS = {
 }
 API_ORDER = ["arolinks", "vplink", "instantlinks"]
 
-# --- MONGODB CONNECTION ---
 try:
     mongo_client = MongoClient(MONGO_URI)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    print("✅ MongoDB Connected Successfully!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
-    sys.exit(1)
 
 USER_STATES = {}
 session = requests.Session()
 app = Flask(__name__)
 
-# --- TELEGRAM APPLICATION ENGINE ---
 ptb_app = Application.builder().token(BOT_TOKEN).build()
-loop = asyncio.get_event_loop()
-
-# 🛠️ MANUALLY INJECT BOT ATTRIBUTES TO PREVENT INITIALIZATION CRASHES
 ptb_app.bot._username = BOT_USERNAME
 ptb_app.bot._bot_user = telegram.User(id=int(BOT_TOKEN.split(':')[0]), is_bot=True, first_name="Getvideo", username=BOT_USERNAME)
 
-# --- SHORTENERS HELPER ---
 def get_short_link(api_name, long_url):
     try:
         api_url = SHORTENERS[api_name].format(url=long_url)
-        response = session.get(api_url, timeout=5)
+        response = session.get(api_url, timeout=4)
         if response.status_code == 200:
             res_text = response.text.strip()
             if "https://" in res_text or "http://" in res_text:
@@ -111,7 +92,6 @@ def update_user_to_verified(user_id):
 def generate_random_token(length=12):
     return "v_" + ''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(length))
 
-# --- MESSAGES HANDLER ---
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -119,8 +99,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = update.message.chat_id
     user_id = update.effective_user.id
     text_message = update.message.text.strip()
-    
-    print(f"📥 [RENDER LOG] -> User: {user_id} | Text: {text_message}", flush=True)
     
     try:
         if text_message.startswith("/start"):
@@ -143,11 +121,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 destination_url = f"https://t.me/{BOT_USERNAME}?start={unique_token}"
                 
                 shortlink = get_short_link(next_api, destination_url)
-                if not shortlink:
-                    shortlink = destination_url
+                if not shortlink: shortlink = destination_url
                 
                 keyboard = [[InlineKeyboardButton("🔐 Verify Here", url=shortlink)]]
-                await bot.send_message(chat_id=chat_id, text=f"⚠️ **Access Denied!**\n\nAapko aage badhne ke liye verify karna hoga. Yeh verification **8 Ghante** ke liye valid rahega.\n\n👉 **Network Used:** `{next_api.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard))
+                await bot.send_message(chat_id=chat_id, text=f"⚠️ **Access Denied!**\n\nAapkoverify karna hoga. Yeh verification **8 Ghante** ke liye valid rahega.\n\n👉 **Network Used:** `{next_api.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard))
                 return
 
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
@@ -169,9 +146,8 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=int(file_id))
             return
     except Exception as err:
-        print(f"❌ Error in text handler: {err}", flush=True)
+        print(f"❌ Error: {err}", flush=True)
 
-# --- BUTTON CLICK HANDLER ---
 async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -195,7 +171,6 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text(f"📦 **Part {current_part} shuru ho raha hai...**")
         await send_video_batch(chat_id, context.bot, user_id)
 
-# --- VIDEO BATCH LOGIC ---
 async def send_video_batch(chat_id, bot, user_id):
     state = USER_STATES[user_id]
     video_list = state["video_list"]
@@ -217,45 +192,39 @@ async def send_video_batch(chat_id, bot, user_id):
             
     if current_part < total_parts:
         keyboard = [[InlineKeyboardButton(f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
-        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete ho gaya hai!**", reply_markup=InlineKeyboardMarkup(keyboard))
+        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await bot.send_message(chat_id=chat_id, text="🎉 **SARA VIDEO COMPLETE HO GAYA!** ✅")
         if user_id in USER_STATES: del USER_STATES[user_id]
 
-# --- REGISTER ENGINE HANDLERS ---
+# --- HANDLERS ---
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
-# --- WEB SERVER ROUTES ---
 @app.route('/', methods=['GET'])
 def index():
-    return "Render Webhook Server is Live & Ready!", 200
+    return "Vercel Serverless Telegram Bot Engine Live!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
-    global loop
-    if request.method == "POST":
-        try:
-            update_json = request.get_json(force=True)
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-            # Internal states bypass force activation
-            ptb_app._initialized = True
-            ptb_app.bot._initialized = True
-            
-            update = Update.de_json(update_json, ptb_app.bot)
-            loop.run_until_complete(ptb_app.process_update(update))
-            return jsonify({"status": "success"}), 200
-        except Exception as e:
-            print(f"💥 Webhook Update Error: {e}", flush=True)
-            return jsonify({"status": "error"}), 500
-    return "Method Not Allowed", 400
+    try:
+        update_json = request.get_json(force=True)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        ptb_app._initialized = True
+        ptb_app.bot._initialized = True
+        
+        update = Update.de_json(update_json, ptb_app.bot)
+        loop.run_until_complete(ptb_app.process_update(update))
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        print(f"💥 Webhook Error: {e}", flush=True)
+        return jsonify({"status": "error"}), 500
+
+# ⚠️ VERCEL REQ: Yeh line serverless function ke handler routing ke liye compulsory hai
+app_wsgi = app
 
 if __name__ == '__main__':
-    # Pick port automatically from Render environment
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 Render Webserver engaged successfully on port {port}!", flush=True)
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=7860)
