@@ -202,14 +202,17 @@ ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
+
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
-    global loop
     if request.method == "POST":
         try:
             update_json = request.get_json(force=True)
             
-            if loop.is_closed():
+            # 🛠️ FIX: Global variable ki jhanjhat khatam, naya ya active loop direct fetch karo
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
@@ -218,17 +221,15 @@ def telegram_webhook():
             
             update = Update.de_json(update_json, ptb_app.bot)
             
-            # 🛠️ FIX: create_task ki jagah run_until_complete me AWAIT karenge
-            # Isse Vercel tab tak freeze nahi hoga jab tak bot reply send nahi kar deta!
+            # Vercel ko rok kar poora process run karne do
             loop.run_until_complete(ptb_app.process_update(update))
             
-            # Message process hone ke BAAD Telegram ko safe response bhejo
             return jsonify({"status": "success"}), 200
             
         except Exception as e:
             print(f"💥 Webhook Error: {e}", flush=True)
             traceback.print_exc()
-            return jsonify({"status": "error"}), 200 # Tab bhi 200 do taaki Telegram block na kare
+            return jsonify({"status": "error"}), 200
     return "Method Not Allowed", 400
 
 # Vercel ko serverless instantiation ke liye yeh handler chahiye hota hai
