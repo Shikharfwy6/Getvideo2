@@ -46,7 +46,6 @@ API_ORDER = ["arolinks", "vplink", "instantlinks"]
 
 # --- MONGODB SETUP WITH CONNECTION POOLING ---
 try:
-    # maxPoolSize=5 lagane se Vercel limits me chalega, dono bots lagatar chalne par bhi database lock nahi hoga
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
@@ -66,7 +65,7 @@ app = Flask(__name__)
 # --- TELEGRAM APPLICATION ENGINE ---
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 
-# 🛠️ INTERNAL BYPASS INJECTION: Initialization crash rokne ke liye properties fill kiye
+# 🛠️ INTERNAL BYPASS INJECTION
 ptb_app.bot._username = BOT_USERNAME
 ptb_app.bot._bot_user = telegram.User(id=int(BOT_TOKEN.split(':')[0]), is_bot=True, first_name="Getvideo", username=BOT_USERNAME)
 
@@ -120,16 +119,17 @@ def update_user_to_verified(user_id):
 def generate_random_token(length=12):
     return "v_" + ''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(length))
 
-# --- TEXT MESSAGES HANDLER ---
+# --- COMMAND & TEXT/MEDIA MESSAGES HANDLER ---
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    if not update.message:
         return
+        
     bot = context.bot
     chat_id = update.message.chat_id
     user_id = update.effective_user.id
-    text_message = update.message.text.strip()
+    text_message = update.message.text.strip() if update.message.text else ""
     
-    print(f"📥 [WEBHOOK LOG] -> User: {user_id} | Text: {text_message}", flush=True)
+    print(f"📥 [WEBHOOK LOG] -> User: {user_id} | Msg: {text_message or '[Media File]'}", flush=True)
     
     try:
         if text_message.startswith("/start"):
@@ -174,7 +174,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_videos = len(video_list)
                 videos_per_part = math.ceil(total_videos / total_parts)
                 USER_STATES[user_id] = {"video_list": video_list, "target_ch": target_ch, "videos_per_part": videos_per_part, "current_part": 1, "total_parts": total_parts, "total_videos": total_videos}
-                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Videos: `{total_videos}`\n\n📦 **Part 1 shuru ho raha hai...**")
+                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n📦 **Part 1 shuru ho raha hai...**")
                 await send_video_batch(chat_id, bot, user_id)
             elif len(extracted_args) == 2:
                 file_id, ch_num = extracted_args
@@ -182,10 +182,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 if target_ch:
                     await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=int(file_id))
             else:
-                await bot.send_message(chat_id=chat_id, text="👋 **Welcome!**\n\nVideos paane ke liye kisi video link par click karke aao!")
+                await bot.send_message(chat_id=chat_id, text="👋 **Welcome!**\n\nFiles paane ke liye kisi link par click karke aao!")
             return
     except Exception as err:
-        print(f"❌ Error in text handler: {err}", flush=True)
+        print(f"❌ Error in text/media handler: {err}", flush=True)
         traceback.print_exc()
 
 # --- BUTTON CLICK HANDLER ---
@@ -212,7 +212,7 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text(f"📦 **Part {current_part} shuru ho raha hai...**")
         await send_video_batch(chat_id, context.bot, user_id)
 
-# --- VIDEO BATCH LOGIC ---
+# --- BATCH LOGIC (SUITS ALL MEDIA TYPES) ---
 async def send_video_batch(chat_id, bot, user_id):
     state = USER_STATES[user_id]
     video_list = state["video_list"]
@@ -227,6 +227,7 @@ async def send_video_batch(chat_id, bot, user_id):
 
     for msg_id in current_batch:
         try:
+            # copy_message video, photo, document sab forward kar sakta hai bina type jane
             await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=msg_id)
             await asyncio.sleep(0.4) 
         except:
@@ -236,12 +237,13 @@ async def send_video_batch(chat_id, bot, user_id):
         keyboard = [[InlineKeyboardButton(f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
         await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await bot.send_message(chat_id=chat_id, text="🎉 **SARA VIDEO COMPLETE HO GAYA!** ✅")
+        await bot.send_message(chat_id=chat_id, text="🎉 **SAARI FILES COMPLETE HO GAYI!** ✅")
         if user_id in USER_STATES: del USER_STATES[user_id]
 
 # --- HANDLERS REGISTRATION ---
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
-ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
+# 🔥 FIXED: Pehle sirf filters.TEXT tha, ab filters.ALL lagane se Image, Document, Video sab catch karega.
+ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 # --- WEB SERVER ROUTES ---
@@ -255,7 +257,6 @@ def telegram_webhook():
         try:
             update_json = request.get_json(force=True)
             
-            # Fresh dynamic loop context management for Serverless Architecture
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -266,10 +267,7 @@ def telegram_webhook():
             ptb_app.bot._initialized = True
             
             update = Update.de_json(update_json, ptb_app.bot)
-            
-            # Forced synchronous block await execution for Serverless engine stability
             loop.run_until_complete(ptb_app.process_update(update))
-            
             return jsonify({"status": "success"}), 200
             
         except Exception as e:
@@ -278,7 +276,6 @@ def telegram_webhook():
             return jsonify({"status": "error"}), 200
     return "Method Not Allowed", 400
 
-# WSGI Application binding handler for Vercel
 app_wsgi = app
 
 if __name__ == '__main__':
