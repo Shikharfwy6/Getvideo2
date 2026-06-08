@@ -60,7 +60,8 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
-app = Flask(name)
+# ✅ FIXED: Flask variable initialized properly with __name__ for Vercel
+app = Flask(__name__)
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 ptb_app.bot._username = BOT_USERNAME
 ptb_app.bot._bot_user = telegram.User(id=int(BOT_TOKEN.split(':')[0]), is_bot=True, first_name="Getvideo", username=BOT_USERNAME)
@@ -153,7 +154,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             
             # --- 1. VERIFICATION CHECKBACK ROUTE ---
             if raw_arg.startswith("v_"):
-                # Token format: v_v1_TOKEN, v_v2_TOKEN, v_v3_TOKEN
                 token_parts = raw_arg.split('_')
                 if len(token_parts) < 3:
                     await bot.send_message(chat_id=chat_id, text="❌ Invalid verification link format!")
@@ -171,14 +171,13 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     elif v_type == "v2":
                         expire_time = now + timedelta(hours=3)
                         req_count = "5"
-                        # Agar pehle se v1 ya v2 ho chuka tha, to tracking ke hisab se dynamically use save karo
                         api_used = "arolink aur vplink" if "arolink" not in user_record.get("current_api", "") else "vplink"
                     else:  # v3
-                        expire_time = get_ist_midnight() # Raat ke 12 baje expiry
+                        expire_time = get_ist_midnight() 
                         req_count = "unlimited"
                         api_used = "complete" if "vplink" not in user_record.get("current_api", "") else "instalink aur vplink"
 
-                    # Database Update as per your exact format requirement
+                    # Database Update
                     users_col.update_one(
                         {"_id": user_id},
                         {"$set": {
@@ -200,17 +199,15 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             is_verified, user_data = check_user_verification(user_id)
             
             if not is_verified:
-                # Naye users ya Reset users ke liye default setup
                 current_api_status = user_data.get("current_api", "") if user_data else ""
                 
                 keyboard = []
                 unique_base = generate_random_token()
                 
-                # Check karo pehle kya use ho chuka hai (Ad counts optimization)
                 has_done_v1 = "arolink" in current_api_status
                 has_done_v2 = "vplink" in current_api_status or "complete" in current_api_status
 
-                # OPTION 1: Sirf tab dikhao jab pehle v1 ya v2 na kiya ho
+                # OPTION 1
                 if not has_done_v1 and not has_done_v2:
                     t_v1 = f"v_v1_{unique_base}"
                     users_col.update_one({"_id": user_id}, {"$set": {"token": t_v1, "status": "unverified", "User": "normal premium", "available_request": "3,5,unlimited"}}, upsert=True)
@@ -218,25 +215,23 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     link_v1 = make_nested_link(["arolinks"], dest_v1)
                     keyboard.append([InlineKeyboardButton("🔐 Verify 1 (4 Page Ads | 3 Req | 2 Hours)", url=link_v1)])
                 
-                # OPTION 2: Agar user v2 direct kar raha hai ya v1 ke baad aaya hai
+                # OPTION 2
                 if not has_done_v2:
                     t_v2 = f"v_v2_{unique_base}"
                     users_col.update_one({"_id": user_id}, {"$set": {"token": t_v2, "status": "unverified", "User": "normal premium", "available_request": "3,5,unlimited"}}, upsert=True)
                     dest_v2 = f"https://t.me/{BOT_USERNAME}?start={t_v2}"
                     
-                    # Agar v1 pehle ho chuka hai to Arolink skip karo, sirf vplink use karo
                     steps_v2 = ["vplink"] if has_done_v1 else ["arolinks", "vplink"]
                     link_v2 = make_nested_link(steps_v2, dest_v2)
                     
                     text_v2 = "🔐 Verify 2 (4 Page Ads | 5 Req | 3 Hours)" if has_done_v1 else "🔐 Verify 2 (8 Page Ads | 5 Req | 3 Hours)"
                     keyboard.append([InlineKeyboardButton(text_v2, url=link_v2)])
 
-                # OPTION 3: Hamesha available rahega jab tak fully complete na ho
+                # OPTION 3
                 t_v3 = f"v_v3_{unique_base}"
                 users_col.update_one({"_id": user_id}, {"$set": {"token": t_v3, "status": "unverified", "User": "normal premium", "available_request": "3,5,unlimited"}}, upsert=True)
                 dest_v3 = f"https://t.me/{BOT_USERNAME}?start={t_v3}"
                 
-                # Agar user option 2 ke baad aa raha hai to Arolink skip (instalink + vplink), warna complete chain
                 steps_v3 = ["vplink", "instantlinks"] if has_done_v2 else ["arolinks", "vplink", "instantlinks"]
                 link_v3 = make_nested_link(steps_v3, dest_v3)
                 
@@ -244,7 +239,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 keyboard.append([InlineKeyboardButton(text_v3, url=link_v3)])
 
                 if not keyboard:
-                    # Fallback agar edge-case me sab completed ho aur credits zero ho jayein
                     users_col.update_one({"_id": user_id}, {"$set": {"current_api": ""}})
                     await bot.send_message(chat_id=chat_id, text="🔄 Aapka daily session state refresh ho gaya hai. Dobara try karne ke liye /start karein.")
                     return
@@ -265,7 +259,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 except:
                     pass
 
-            # Standard batching logic handler
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
             if len(extracted_args) == 4:
                 start_id, end_id, ch_num, total_parts = map(int, extracted_args)
@@ -347,7 +340,7 @@ ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Vercel/Render Serverless Engine Engine Live with Custom Multiple Chaining & Dynamic Reset!", 200
+    return "Vercel/Render Serverless Engine Live with Custom Multiple Chaining & Dynamic Reset!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
@@ -370,6 +363,9 @@ def telegram_webhook():
             print(f"💥 Webhook Process Error: {e}", flush=True)
             return jsonify({"status": "error"}), 200
     return "Method Not Allowed", 400
+
+# ✅ FIXED: Production environment variable mapping for Vercel WSGI architecture
+app_wsgi = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=7860)
