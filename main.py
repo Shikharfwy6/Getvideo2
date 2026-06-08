@@ -24,6 +24,7 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot"
+ADMIN_ID = 7559016251  # ✅ Sirf aap hi /p command chala sakte hain
 
 if not BOT_TOKEN or not MONGO_URI:
     print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
@@ -37,7 +38,7 @@ CHANNELS = {
     "5": "-1003307449853"
 }
 
-# Updated Shorteners APIs (Arolinks, Vplink, Instantlinks)
+# Updated Shorteners APIs
 SHORTENERS = {
     "arolinks": "https://arolinks.com/api?api=f4617908b561110a219cd2b65bc255c2c2c6ff8a&url={url}",
     "vplink": "https://vplink.in/api?api=017ab25e4402465d00047e8e2897f3c6b38afbd9&url={url}",
@@ -49,7 +50,7 @@ try:
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    print("✅ MongoDB Connected with New Schema Rules!", flush=True)
+    print("✅ MongoDB Connected with Premium & Multi-Token Logic!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
     sys.exit(1)
@@ -60,7 +61,6 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
-# ✅ FIXED: Flask variable initialized properly with __name__ for Vercel
 app = Flask(__name__)
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 ptb_app.bot._username = BOT_USERNAME
@@ -84,22 +84,24 @@ def get_short_link(api_name, long_url):
     return None
 
 def get_ist_midnight():
-    """Aaj ki raat ke 12:00 baje (Midnight) ka IST time object nikalne ke liye"""
     now_ist = datetime.now(IST)
     midnight = now_ist.replace(hour=23, minute=59, second=59, microsecond=0)
     return midnight.astimezone(pytz.utc)
 
 def check_user_verification(user_id):
     """
-    User status verify karta hai aur uske credit check karta hai.
-    Raat ke 12 baje ke baad automatically unverified ho jayega.
+    User status aur premium rights verify karta hai.
     """
     try:
         user = users_col.find_one({"_id": user_id})
         now = datetime.utcnow()
         
         if user:
-            # Agar expiry time nikal gaya hai to unverified karo
+            # ✅ Rule: Agar user "premium" hai toh hamesha True aur unlimted requests de do
+            if user.get("User") == "premium":
+                return True, user
+
+            # Expiry validation for normal users
             if user.get("expire_at") and user.get("expire_at").replace(tzinfo=pytz.utc) < now.replace(tzinfo=pytz.utc):
                 users_col.update_one({"_id": user_id}, {"$set": {"status": "unverified", "available_request": "0"}})
                 return False, user
@@ -114,7 +116,6 @@ def check_user_verification(user_id):
                 except ValueError:
                     pass
                 
-                # Agar requests khatam ho chuki hain
                 users_col.update_one({"_id": user_id}, {"$set": {"status": "unverified"}})
                 return False, user
             return False, user
@@ -126,7 +127,6 @@ def generate_random_token(length=12):
     return "v_" + ''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(length))
 
 def make_nested_link(steps, target_url):
-    """Links ko multiple levels me chain short karne ke liye function"""
     current_url = target_url
     for step in steps:
         short = get_short_link(step, current_url)
@@ -135,6 +135,39 @@ def make_nested_link(steps, target_url):
         else:
             print(f"⚠️ Chain shortener failed for {step}, bypassing step.", flush=True)
     return current_url
+
+# --- ADMIN COMMAND HANDLER (/p) ---
+async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # ✅ Security Verification: Sirf aapka user_id chala sakta hai
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Unauthorized! Aapke paas is command ko chalane ki authorization nahi hai.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("💡 **Sahi Format:** `/p target_user_id`")
+        return
+
+    try:
+        target_uid = int(context.args[0])
+        
+        # Database mein status update
+        users_col.update_one(
+            {"_id": target_uid},
+            {"$set": {
+                "User": "premium",
+                "status": "verified",
+                "available_request": "unlimited",
+                "expire_at": None  # Hamesha ke liye valid
+            }},
+            upsert=True
+        )
+        await update.message.reply_text(f"👑 **Success!** User `{target_uid}` ko lifelong **Premium** member bana diya gaya hai. Ab inhe koi verification nahi dikhega.")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid User ID! Kripya sahi numeric ID dalein.")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error: {e}")
 
 # --- COMMAND & TEXT/MEDIA HANDLERS ---
 
@@ -160,7 +193,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     return
                 
                 v_type = token_parts[1] # v1, v2, v3
-                user_record = users_col.find_one({"_id": user_id, "token": raw_arg})
+                
+                # ✅ FIX: Ab bot check karega user ka exact token level field jo active hai
+                search_query = {"_id": user_id, f"token_{v_type}": raw_arg}
+                user_record = users_col.find_one(search_query)
                 
                 if user_record:
                     now = datetime.utcnow()
@@ -183,12 +219,13 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                         {"$set": {
                             "status": "verified",
                             "current_api": api_used,
-                            "User": "normal premium",
+                            "User": user_record.get("User", "normal"), # Pure status normal rahega jab tak aap premium na karein
                             "available_request": req_count,
-                            "token": None,
                             "expire_at": expire_time
-                        }},
-                        upsert=True
+                        },
+                        "$unset": {
+                            "token_v1": "", "token_v2": "", "token_v3": "" # Purane safe cleanup tokens
+                        }}
                     )
                     await bot.send_message(chat_id=chat_id, text=f"✅ **Verification Successful!**\n\nAapko **{req_count} requests** mil gayi hain. 🎉")
                 else:
@@ -200,6 +237,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             
             if not is_verified:
                 current_api_status = user_data.get("current_api", "") if user_data else ""
+                current_user_type = user_data.get("User", "normal") if user_data else "normal"
                 
                 keyboard = []
                 unique_base = generate_random_token()
@@ -207,10 +245,17 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 has_done_v1 = "arolink" in current_api_status
                 has_done_v2 = "vplink" in current_api_status or "complete" in current_api_status
 
+                # Database initialization query dictionary
+                db_updates = {
+                    "status": "unverified",
+                    "User": current_user_type, # Hamesha "normal" bacha ke rakhega
+                    "available_request": "3,5,unlimited"
+                }
+
                 # OPTION 1
                 if not has_done_v1 and not has_done_v2:
                     t_v1 = f"v_v1_{unique_base}"
-                    users_col.update_one({"_id": user_id}, {"$set": {"token": t_v1, "status": "unverified", "User": "normal premium", "available_request": "3,5,unlimited"}}, upsert=True)
+                    db_updates["token_v1"] = t_v1  # ✅ Alag unique database index
                     dest_v1 = f"https://t.me/{BOT_USERNAME}?start={t_v1}"
                     link_v1 = make_nested_link(["arolinks"], dest_v1)
                     keyboard.append([InlineKeyboardButton("🔐 Verify 1 (4 Page Ads | 3 Req | 2 Hours)", url=link_v1)])
@@ -218,7 +263,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 # OPTION 2
                 if not has_done_v2:
                     t_v2 = f"v_v2_{unique_base}"
-                    users_col.update_one({"_id": user_id}, {"$set": {"token": t_v2, "status": "unverified", "User": "normal premium", "available_request": "3,5,unlimited"}}, upsert=True)
+                    db_updates["token_v2"] = t_v2  # ✅ Alag unique database index
                     dest_v2 = f"https://t.me/{BOT_USERNAME}?start={t_v2}"
                     
                     steps_v2 = ["vplink"] if has_done_v1 else ["arolinks", "vplink"]
@@ -229,7 +274,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
                 # OPTION 3
                 t_v3 = f"v_v3_{unique_base}"
-                users_col.update_one({"_id": user_id}, {"$set": {"token": t_v3, "status": "unverified", "User": "normal premium", "available_request": "3,5,unlimited"}}, upsert=True)
+                db_updates["token_v3"] = t_v3  # ✅ Alag unique database index
                 dest_v3 = f"https://t.me/{BOT_USERNAME}?start={t_v3}"
                 
                 steps_v3 = ["vplink", "instantlinks"] if has_done_v2 else ["arolinks", "vplink", "instantlinks"]
@@ -237,6 +282,9 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 
                 text_v3 = "🔐 Verify 3 (4 Page Ads | Unlimited Requests | 24h)" if has_done_v2 else "🔐 Verify 3 (12 Page Ads | Unlimited Requests | 24h)"
                 keyboard.append([InlineKeyboardButton(text_v3, url=link_v3)])
+
+                # Ek sath saare alag tokens database me daal do bina overwrite kiye
+                users_col.update_one({"_id": user_id}, {"$set": db_updates}, upsert=True)
 
                 if not keyboard:
                     users_col.update_one({"_id": user_id}, {"$set": {"current_api": ""}})
@@ -251,13 +299,15 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 return
 
             # --- 3. DEDUCT REQUEST & DELIVER CONTENT ---
-            reqs = user_data.get("available_request", "0")
-            if reqs != "unlimited":
-                try:
-                    new_reqs = str(max(0, int(reqs) - 1))
-                    users_col.update_one({"_id": user_id}, {"$set": {"available_request": new_reqs}})
-                except:
-                    pass
+            # Premium users se koi request deduct nahi hogi
+            if user_data.get("User") != "premium":
+                reqs = user_data.get("available_request", "0")
+                if reqs != "unlimited":
+                    try:
+                        new_reqs = str(max(0, int(reqs) - 1))
+                        users_col.update_one({"_id": user_id}, {"$set": {"available_request": new_reqs}})
+                    except:
+                        pass
 
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
             if len(extracted_args) == 4:
@@ -334,13 +384,14 @@ async def send_video_batch(chat_id, bot, user_id):
         if user_id in USER_STATES: del USER_STATES[user_id]
 
 # --- HANDLERS REGISTRATION ---
+ptb_app.add_handler(CommandHandler("p", handle_premium_command))  # ✅ Register Premium Add Admin Route
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Vercel/Render Serverless Engine Live with Custom Multiple Chaining & Dynamic Reset!", 200
+    return "Vercel Live with Fixed Multi-Token System and Admin Security Management Tools!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
@@ -364,7 +415,6 @@ def telegram_webhook():
             return jsonify({"status": "error"}), 200
     return "Method Not Allowed", 400
 
-# ✅ FIXED: Production environment variable mapping for Vercel WSGI architecture
 app_wsgi = app
 
 if __name__ == '__main__':
