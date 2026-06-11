@@ -37,8 +37,7 @@ CHANNELS = {
     "4": "-1003195006898",
     "5": "-1003307449853",
     "6": "-1003901369992",
-    "7": "-1003400249450",
-    "8": "-1003211122364"
+    "7": "-1003400249450"
 }
 
 SHORTENERS = {
@@ -63,6 +62,7 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
+# Vercel integration ke liye is object ka name 'app' hona zaroori hai
 app = Flask(__name__)
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 ptb_app.bot._username = BOT_USERNAME
@@ -70,8 +70,28 @@ ptb_app.bot._bot_user = telegram.User(id=int(BOT_TOKEN.split(':')[0]), is_bot=Tr
 
 IST = pytz.timezone('Asia/Kolkata')
 
-# --- HELPER FUNCTIONS ---
+# --- ⏱️ DYNAMIC AUTO DELETE BACKGROUND TASK ---
+async def schedule_message_deletion(bot, chat_id, user_id, message_id, delay_seconds=300):
+    """
+    5 minutes baad chalega: chat se video delete karega aur MongoDB array se log remove karega.
+    """
+    await asyncio.sleep(delay_seconds)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        print(f"🗑️ Deleted message {message_id} from chat {chat_id}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Message delete skipped (ho sakta hai user ne pehle hi hata diya ho): {e}", flush=True)
+    
+    try:
+        # Database array se is exact task ka timestamp element pull (remove) kar do
+        users_col.update_one(
+            {"_id": user_id},
+            {"$pull": {"active_files": {"message_id": message_id}}}
+        )
+    except Exception as e:
+        print(f"❌ MongoDB Pull Error: {e}", flush=True)
 
+# --- HELPER FUNCTIONS ---
 def get_short_link(api_name, long_url):
     try:
         api_url = SHORTENERS[api_name].format(url=long_url)
@@ -133,31 +153,6 @@ def make_nested_link(steps, target_url):
             print(f"⚠️ Chain shortener failed for {step}, bypassing step.", flush=True)
     return current_url
 
-
-# --- ⏱️ AUTO DELETE BACKGROUND TASK ---
-async def schedule_message_deletion(bot, chat_id, user_id, message_id, delay_seconds=300):
-    """
-    Yeh function 5 minutes wait karega, user ke pass se message delete karega 
-    aur MongoDB array se us dynamic timestamp entry ko remove karega.
-    """
-    await asyncio.sleep(delay_seconds)
-    try:
-        # User ki chat se video/file delete karein
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        print(f"🗑️ Deleted message {message_id} from chat {chat_id}", flush=True)
-    except Exception as e:
-        print(f"⚠️ Message delete karne me dikkat aayi (Ho sakta hai user ne khud kar diya ho): {e}", flush=True)
-    
-    try:
-        # MongoDB database se matching element remove (Pull) karein
-        users_col.update_one(
-            {"_id": user_id},
-            {"$pull": {"active_files": {"message_id": message_id}}}
-        )
-    except Exception as e:
-        print(f"❌ Failed to remove file log from MongoDB: {e}", flush=True)
-
-
 # --- ADMIN COMMAND HANDLER (/p) ---
 async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -181,12 +176,11 @@ async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_T
             }},
             upsert=True
         )
-        await update.message.reply_text(f"👑 **Success!** User `{target_uid}` ko Lifelong Premium member bana diya gaya hai.")
+        await update.message.reply_text(f"👑 **Success!** User `{target_uid}` ko lifelong **Premium** member bana diya gaya hai.")
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID!")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {e}")
-
 
 # --- COMMAND & TEXT/MEDIA HANDLERS ---
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -316,7 +310,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
             
-            # For Batch / Multi-files
+            # Batch Mode
             if len(extracted_args) == 4:
                 start_id, end_id, ch_num, total_parts = map(int, extracted_args)
                 video_list = list(range(start_id, end_id + 1))
@@ -326,20 +320,20 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_videos = len(video_list)
                 videos_per_part = math.ceil(total_videos / total_parts)
                 USER_STATES[user_id] = {"video_list": video_list, "target_ch": target_ch, "videos_per_part": videos_per_part, "current_part": 1, "total_parts": total_parts, "total_videos": total_videos}
-                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files aane ke exact 5 mins baad automatic delete ho jayengi!*")
+                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files milne ke exact 5 mins baad auto-delete ho jayengi!*")
                 await send_video_batch(chat_id, bot, user_id)
                 
-            # For Single File
+            # Single File Mode
             elif len(extracted_args) == 2:
                 file_id, ch_num = extracted_args
                 target_ch = CHANNELS.get(str(ch_num))
                 if target_ch:
                     sent_msg = await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=int(file_id))
                     
-                    # MongoDB me data push karna dynamic structure ke sath
                     now = datetime.utcnow()
                     delete_at = now + timedelta(minutes=5)
                     
+                    # Log to MongoDB
                     users_col.update_one(
                         {"_id": user_id},
                         {"$push": {
@@ -350,15 +344,14 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                             }
                         }}
                     )
-                    # Background auto-delete timer shuru karein (300 seconds = 5 minutes)
+                    # Trigger 5 mins timer task
                     asyncio.create_task(schedule_message_deletion(bot, chat_id, user_id, sent_msg.message_id, 300))
             else:
                 await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka verification active hai.")
             return
-    except Exception err:
+    except Exception as err:
         print(f"❌ Error in message handler: {err}", flush=True)
         traceback.print_exc()
-
 
 # --- BUTTON CLICK HANDLER FOR BATCH PARTS ---
 async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -384,7 +377,6 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text(f"📦 **Part {current_part} shuru ho raha hai...**")
         await send_video_batch(chat_id, context.bot, user_id)
 
-
 async def send_video_batch(chat_id, bot, user_id):
     state = USER_STATES[user_id]
     video_list = state["video_list"]
@@ -404,7 +396,7 @@ async def send_video_batch(chat_id, bot, user_id):
         try:
             sent_msg = await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=msg_id)
             
-            # Database entry har ek video ke liye dynamic array element push karegi
+            # Har file ka timestamp list me store hoga dynamically
             users_col.update_one(
                 {"_id": user_id},
                 {"$push": {
@@ -415,7 +407,7 @@ async def send_video_batch(chat_id, bot, user_id):
                     }
                 }}
             )
-            # Har video ka apna independent 5 minute ka delete timer chalega
+            # Har video ka dynamic independent 5 minute timer
             asyncio.create_task(schedule_message_deletion(bot, chat_id, user_id, sent_msg.message_id, 300))
             await asyncio.sleep(0.6) 
         except:
@@ -423,11 +415,10 @@ async def send_video_batch(chat_id, bot, user_id):
             
     if current_part < total_parts:
         keyboard = [[InlineKeyboardButton(f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
-        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Sabhi bheje gye videos 5 mins me delete ho jayenge.*", reply_markup=InlineKeyboardMarkup(keyboard))
+        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Bheji gayi files 5 mins me delete ho jayengi.*", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await bot.send_message(chat_id=chat_id, text="🎉 **SAARI FILES COMPLETE HO GAYI!** ✅")
         if user_id in USER_STATES: del USER_STATES[user_id]
-
 
 # --- HANDLERS REGISTRATION ---
 ptb_app.add_handler(CommandHandler("p", handle_premium_command))
@@ -461,7 +452,8 @@ def telegram_webhook():
             return jsonify({"status": "error"}), 200
     return "Method Not Allowed", 400
 
-app_wsgi = app
+# 🟢 WSGI export ko simple aur clean rakha taaki Vercel ko directly 'app' mil jaye
+app = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=7860)
