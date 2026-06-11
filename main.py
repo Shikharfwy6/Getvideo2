@@ -37,10 +37,10 @@ CHANNELS = {
     "4": "-1003195006898",
     "5": "-1003307449853",
     "6": "-1003901369992",
-    "7": "-1003400249450"
+    "7": "-1003400249450",
+    "8": "-1003211122364"
 }
 
-# Updated Shorteners APIs
 SHORTENERS = {
     "arolinks": "https://arolinks.com/api?api=f4617908b561110a219cd2b65bc255c2c2c6ff8a&url={url}",
     "vplink": "https://vplink.in/api?api=017ab25e4402465d00047e8e2897f3c6b38afbd9&url={url}",
@@ -52,7 +52,7 @@ try:
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    print("✅ MongoDB Connected with Premium & Multi-Token Logic!", flush=True)
+    print("✅ MongoDB Connected with Premium & Auto-Delete Logic!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
     sys.exit(1)
@@ -91,19 +91,14 @@ def get_ist_midnight():
     return midnight.astimezone(pytz.utc)
 
 def check_user_verification(user_id):
-    """
-    User status aur premium rights verify karta hai.
-    """
     try:
         user = users_col.find_one({"_id": user_id})
         now = datetime.utcnow()
         
         if user:
-            # ✅ Rule: Agar user "premium" hai toh hamesha True aur unlimted requests de do
             if user.get("User") == "premium":
                 return True, user
 
-            # Expiry validation for normal users
             if user.get("expire_at") and user.get("expire_at").replace(tzinfo=pytz.utc) < now.replace(tzinfo=pytz.utc):
                 users_col.update_one({"_id": user_id}, {"$set": {"status": "unverified", "available_request": "0"}})
                 return False, user
@@ -138,13 +133,36 @@ def make_nested_link(steps, target_url):
             print(f"⚠️ Chain shortener failed for {step}, bypassing step.", flush=True)
     return current_url
 
+
+# --- ⏱️ AUTO DELETE BACKGROUND TASK ---
+async def schedule_message_deletion(bot, chat_id, user_id, message_id, delay_seconds=300):
+    """
+    Yeh function 5 minutes wait karega, user ke pass se message delete karega 
+    aur MongoDB array se us dynamic timestamp entry ko remove karega.
+    """
+    await asyncio.sleep(delay_seconds)
+    try:
+        # User ki chat se video/file delete karein
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        print(f"🗑️ Deleted message {message_id} from chat {chat_id}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Message delete karne me dikkat aayi (Ho sakta hai user ne khud kar diya ho): {e}", flush=True)
+    
+    try:
+        # MongoDB database se matching element remove (Pull) karein
+        users_col.update_one(
+            {"_id": user_id},
+            {"$pull": {"active_files": {"message_id": message_id}}}
+        )
+    except Exception as e:
+        print(f"❌ Failed to remove file log from MongoDB: {e}", flush=True)
+
+
 # --- ADMIN COMMAND HANDLER (/p) ---
 async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    # ✅ Security Verification: Sirf aapka user_id chala sakta hai
     if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized! Aapke paas is command ko chalane ki authorization nahi hai.")
+        await update.message.reply_text("❌ Unauthorized!")
         return
 
     if not context.args:
@@ -153,26 +171,24 @@ async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         target_uid = int(context.args[0])
-        
-        # Database mein status update
         users_col.update_one(
             {"_id": target_uid},
             {"$set": {
                 "User": "premium",
                 "status": "verified",
                 "available_request": "unlimited",
-                "expire_at": None  # Hamesha ke liye valid
+                "expire_at": None
             }},
             upsert=True
         )
-        await update.message.reply_text(f"👑 **Success!** User `{target_uid}` ko lifelong **Premium** member bana diya gaya hai. Ab inhe koi verification nahi dikhega.")
+        await update.message.reply_text(f"👑 **Success!** User `{target_uid}` ko Lifelong Premium member bana diya gaya hai.")
     except ValueError:
-        await update.message.reply_text("❌ Invalid User ID! Kripya sahi numeric ID dalein.")
+        await update.message.reply_text("❌ Invalid User ID!")
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {e}")
 
-# --- COMMAND & TEXT/MEDIA HANDLERS ---
 
+# --- COMMAND & TEXT/MEDIA HANDLERS ---
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -194,9 +210,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     await bot.send_message(chat_id=chat_id, text="❌ Invalid verification link format!")
                     return
                 
-                v_type = token_parts[1] # v1, v2, v3
-                
-                # ✅ FIX: Ab bot check karega user ka exact token level field jo active hai
+                v_type = token_parts[1]
                 search_query = {"_id": user_id, f"token_{v_type}": raw_arg}
                 user_record = users_col.find_one(search_query)
                 
@@ -210,23 +224,22 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                         expire_time = now + timedelta(hours=3)
                         req_count = "5"
                         api_used = "arolink aur vplink" if "arolink" not in user_record.get("current_api", "") else "vplink"
-                    else:  # v3
+                    else:
                         expire_time = get_ist_midnight() 
                         req_count = "unlimited"
                         api_used = "complete" if "vplink" not in user_record.get("current_api", "") else "instalink aur vplink"
 
-                    # Database Update
                     users_col.update_one(
                         {"_id": user_id},
                         {"$set": {
                             "status": "verified",
                             "current_api": api_used,
-                            "User": user_record.get("User", "normal"), # Pure status normal rahega jab tak aap premium na karein
+                            "User": user_record.get("User", "normal"),
                             "available_request": req_count,
                             "expire_at": expire_time
                         },
                         "$unset": {
-                            "token_v1": "", "token_v2": "", "token_v3": "" # Purane safe cleanup tokens
+                            "token_v1": "", "token_v2": "", "token_v3": ""
                         }}
                     )
                     await bot.send_message(chat_id=chat_id, text=f"✅ **Verification Successful!**\n\nAapko **{req_count} requests** mil gayi hain. 🎉")
@@ -247,50 +260,41 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 has_done_v1 = "arolink" in current_api_status
                 has_done_v2 = "vplink" in current_api_status or "complete" in current_api_status
 
-                # Database initialization query dictionary
                 db_updates = {
                     "status": "unverified",
-                    "User": current_user_type, # Hamesha "normal" bacha ke rakhega
+                    "User": current_user_type,
                     "available_request": "3,5,unlimited"
                 }
 
-                # OPTION 1
                 if not has_done_v1 and not has_done_v2:
                     t_v1 = f"v_v1_{unique_base}"
-                    db_updates["token_v1"] = t_v1  # ✅ Alag unique database index
+                    db_updates["token_v1"] = t_v1
                     dest_v1 = f"https://t.me/{BOT_USERNAME}?start={t_v1}"
                     link_v1 = make_nested_link(["arolinks"], dest_v1)
                     keyboard.append([InlineKeyboardButton("🔐 Verify 1 (4 Page Ads | 3 Req | 2 Hours)", url=link_v1)])
                 
-                # OPTION 2
                 if not has_done_v2:
                     t_v2 = f"v_v2_{unique_base}"
-                    db_updates["token_v2"] = t_v2  # ✅ Alag unique database index
+                    db_updates["token_v2"] = t_v2
                     dest_v2 = f"https://t.me/{BOT_USERNAME}?start={t_v2}"
-                    
                     steps_v2 = ["vplink"] if has_done_v1 else ["arolinks", "vplink"]
                     link_v2 = make_nested_link(steps_v2, dest_v2)
-                    
                     text_v2 = "🔐 Verify 2 (4 Page Ads | 5 Req | 3 Hours)" if has_done_v1 else "🔐 Verify 2 (8 Page Ads | 5 Req | 3 Hours)"
                     keyboard.append([InlineKeyboardButton(text_v2, url=link_v2)])
 
-                # OPTION 3
                 t_v3 = f"v_v3_{unique_base}"
-                db_updates["token_v3"] = t_v3  # ✅ Alag unique database index
+                db_updates["token_v3"] = t_v3
                 dest_v3 = f"https://t.me/{BOT_USERNAME}?start={t_v3}"
-                
                 steps_v3 = ["vplink", "instantlinks"] if has_done_v2 else ["arolinks", "vplink", "instantlinks"]
                 link_v3 = make_nested_link(steps_v3, dest_v3)
-                
                 text_v3 = "🔐 Verify 3 (4 Page Ads | Unlimited Requests | 24h)" if has_done_v2 else "🔐 Verify 3 (12 Page Ads | Unlimited Requests | 24h)"
                 keyboard.append([InlineKeyboardButton(text_v3, url=link_v3)])
 
-                # Ek sath saare alag tokens database me daal do bina overwrite kiye
                 users_col.update_one({"_id": user_id}, {"$set": db_updates}, upsert=True)
 
                 if not keyboard:
                     users_col.update_one({"_id": user_id}, {"$set": {"current_api": ""}})
-                    await bot.send_message(chat_id=chat_id, text="🔄 Aapka daily session state refresh ho gaya hai. Dobara try karne ke liye /start karein.")
+                    await bot.send_message(chat_id=chat_id, text="🔄 Session refresh ho gaya hai. Dobara try karein.")
                     return
 
                 await bot.send_message(
@@ -301,7 +305,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 return
 
             # --- 3. DEDUCT REQUEST & DELIVER CONTENT ---
-            # Premium users se koi request deduct nahi hogi
             if user_data.get("User") != "premium":
                 reqs = user_data.get("available_request", "0")
                 if reqs != "unlimited":
@@ -312,6 +315,8 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                         pass
 
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
+            
+            # For Batch / Multi-files
             if len(extracted_args) == 4:
                 start_id, end_id, ch_num, total_parts = map(int, extracted_args)
                 video_list = list(range(start_id, end_id + 1))
@@ -321,19 +326,39 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_videos = len(video_list)
                 videos_per_part = math.ceil(total_videos / total_parts)
                 USER_STATES[user_id] = {"video_list": video_list, "target_ch": target_ch, "videos_per_part": videos_per_part, "current_part": 1, "total_parts": total_parts, "total_videos": total_videos}
-                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n📦 **Part 1 shuru ho raha hai...**")
+                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files aane ke exact 5 mins baad automatic delete ho jayengi!*")
                 await send_video_batch(chat_id, bot, user_id)
+                
+            # For Single File
             elif len(extracted_args) == 2:
                 file_id, ch_num = extracted_args
                 target_ch = CHANNELS.get(str(ch_num))
                 if target_ch:
-                    await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=int(file_id))
+                    sent_msg = await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=int(file_id))
+                    
+                    # MongoDB me data push karna dynamic structure ke sath
+                    now = datetime.utcnow()
+                    delete_at = now + timedelta(minutes=5)
+                    
+                    users_col.update_one(
+                        {"_id": user_id},
+                        {"$push": {
+                            "active_files": {
+                                "message_id": sent_msg.message_id,
+                                "give_time": now,
+                                "delete_at": delete_at
+                            }
+                        }}
+                    )
+                    # Background auto-delete timer shuru karein (300 seconds = 5 minutes)
+                    asyncio.create_task(schedule_message_deletion(bot, chat_id, user_id, sent_msg.message_id, 300))
             else:
-                await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka verification active hai. Kisi bhi link se files paane ke liye click karein!")
+                await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka verification active hai.")
             return
-    except Exception as err:
+    except Exception err:
         print(f"❌ Error in message handler: {err}", flush=True)
         traceback.print_exc()
+
 
 # --- BUTTON CLICK HANDLER FOR BATCH PARTS ---
 async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -359,6 +384,7 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text(f"📦 **Part {current_part} shuru ho raha hai...**")
         await send_video_batch(chat_id, context.bot, user_id)
 
+
 async def send_video_batch(chat_id, bot, user_id):
     state = USER_STATES[user_id]
     video_list = state["video_list"]
@@ -371,29 +397,47 @@ async def send_video_batch(chat_id, bot, user_id):
     end_idx = start_idx + videos_per_part
     current_batch = video_list[start_idx:end_idx]
 
+    now = datetime.utcnow()
+    delete_at = now + timedelta(minutes=5)
+
     for msg_id in current_batch:
         try:
-            await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=msg_id)
-            await asyncio.sleep(0.5) 
+            sent_msg = await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=msg_id)
+            
+            # Database entry har ek video ke liye dynamic array element push karegi
+            users_col.update_one(
+                {"_id": user_id},
+                {"$push": {
+                    "active_files": {
+                        "message_id": sent_msg.message_id,
+                        "give_time": now,
+                        "delete_at": delete_at
+                    }
+                }}
+            )
+            # Har video ka apna independent 5 minute ka delete timer chalega
+            asyncio.create_task(schedule_message_deletion(bot, chat_id, user_id, sent_msg.message_id, 300))
+            await asyncio.sleep(0.6) 
         except:
             pass
             
     if current_part < total_parts:
         keyboard = [[InlineKeyboardButton(f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
-        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**", reply_markup=InlineKeyboardMarkup(keyboard))
+        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Sabhi bheje gye videos 5 mins me delete ho jayenge.*", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await bot.send_message(chat_id=chat_id, text="🎉 **SAARI FILES COMPLETE HO GAYI!** ✅")
         if user_id in USER_STATES: del USER_STATES[user_id]
 
+
 # --- HANDLERS REGISTRATION ---
-ptb_app.add_handler(CommandHandler("p", handle_premium_command))  # ✅ Register Premium Add Admin Route
+ptb_app.add_handler(CommandHandler("p", handle_premium_command))
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_text_messages))
 ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Vercel Live with Fixed Multi-Token System and Admin Security Management Tools!", 200
+    return "Vercel Live with Fixed Multi-Token System and Dynamic 5-Min Auto-Delete!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
