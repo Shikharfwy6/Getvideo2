@@ -33,11 +33,12 @@ if not BOT_TOKEN or not MONGO_URI:
 CHANNELS = {
     "1": "-1003952628014",
     "2": "-1003758252316",
-    "3": "-1003736158308",
+    "3": "-1003307449853",
     "4": "-1003195006898",
     "5": "-1003307449853",
     "6": "-1003901369992",
-    "7": "-1003400249450"
+    "7": "-1003400249450",
+    "8": "-1003211122364"
 }
 
 SHORTENERS = {
@@ -51,7 +52,7 @@ try:
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    print("✅ MongoDB Connected with Premium & Auto-Delete Logic!", flush=True)
+    print("✅ MongoDB Connected with Vercel Auto-Delete Logic!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
     sys.exit(1)
@@ -62,7 +63,6 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 })
 
-# Vercel integration ke liye is object ka name 'app' hona zaroori hai
 app = Flask(__name__)
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 ptb_app.bot._username = BOT_USERNAME
@@ -70,26 +70,39 @@ ptb_app.bot._bot_user = telegram.User(id=int(BOT_TOKEN.split(':')[0]), is_bot=Tr
 
 IST = pytz.timezone('Asia/Kolkata')
 
-# --- ⏱️ DYNAMIC AUTO DELETE BACKGROUND TASK ---
-async def schedule_message_deletion(bot, chat_id, user_id, message_id, delay_seconds=300):
+# --- ⏱️ VERCEL CLEANUP FUNCTION ---
+async def clean_expired_files(bot, user_id, chat_id):
     """
-    5 minutes baad chalega: chat se video delete karega aur MongoDB array se log remove karega.
+    Yeh function Vercel par bina soye kaam karega. Jab bhi user bot par active hoga,
+    yeh un sabhi files ko dhoondh kar delete kar dega jinka time (5 mins) poora ho chuka hai.
     """
-    await asyncio.sleep(delay_seconds)
     try:
-        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        print(f"🗑️ Deleted message {message_id} from chat {chat_id}", flush=True)
+        user = users_col.find_one({"_id": user_id})
+        if not user or "active_files" not in user:
+            return
+
+        now = datetime.utcnow()
+        expired_messages = []
+
+        for file_info in user["active_files"]:
+            # Agar delete_at ka time nikal chuka hai
+            if file_info["delete_at"].replace(tzinfo=pytz.utc) <= now.replace(tzinfo=pytz.utc):
+                msg_id = file_info["message_id"]
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                    print(f"🗑️ Cleaned up expired message {msg_id}", flush=True)
+                except Exception as e:
+                    print(f"⚠️ Message {msg_id} already deleted or not found: {e}", flush=True)
+                expired_messages.append(file_info)
+
+        # Jo delete ho gaye unhe database se ek sath hata do
+        if expired_messages:
+            users_col.update_one(
+                {"_id": user_id},
+                {"$pull": {"active_files": {"message_id": {"$in": [x["message_id"] for x in expired_messages]}}}}
+            )
     except Exception as e:
-        print(f"⚠️ Message delete skipped (ho sakta hai user ne pehle hi hata diya ho): {e}", flush=True)
-    
-    try:
-        # Database array se is exact task ka timestamp element pull (remove) kar do
-        users_col.update_one(
-            {"_id": user_id},
-            {"$pull": {"active_files": {"message_id": message_id}}}
-        )
-    except Exception as e:
-        print(f"❌ MongoDB Pull Error: {e}", flush=True)
+        print(f"❌ Error in clean_expired_files: {e}", flush=True)
 
 # --- HELPER FUNCTIONS ---
 def get_short_link(api_name, long_url):
@@ -191,6 +204,9 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = update.message.chat_id
     user_id = update.effective_user.id
     text_message = update.message.text.strip() if update.message.text else ""
+    
+    # 🔄 Har action par pehle expired files ka kachra saaf karo (Vercel Fix)
+    await clean_expired_files(bot, user_id, chat_id)
     
     try:
         if text_message.startswith("/start"):
@@ -320,7 +336,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_videos = len(video_list)
                 videos_per_part = math.ceil(total_videos / total_parts)
                 USER_STATES[user_id] = {"video_list": video_list, "target_ch": target_ch, "videos_per_part": videos_per_part, "current_part": 1, "total_parts": total_parts, "total_videos": total_videos}
-                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files milne ke exact 5 mins baad auto-delete ho jayengi!*")
+                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files milne ke 5 mins baad auto-delete ho jayengi jab aap bot par koi action karenge!*")
                 await send_video_batch(chat_id, bot, user_id)
                 
             # Single File Mode
@@ -344,8 +360,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                             }
                         }}
                     )
-                    # Trigger 5 mins timer task
-                    asyncio.create_task(schedule_message_deletion(bot, chat_id, user_id, sent_msg.message_id, 300))
             else:
                 await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka verification active hai.")
             return
@@ -359,6 +373,9 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = query.from_user.id
     chat_id = query.message.chat_id
     await query.answer()
+    
+    # Clean files on button click too
+    await clean_expired_files(context.bot, user_id, chat_id)
     
     is_verified, _ = check_user_verification(user_id)
     if not is_verified:
@@ -407,15 +424,13 @@ async def send_video_batch(chat_id, bot, user_id):
                     }
                 }}
             )
-            # Har video ka dynamic independent 5 minute timer
-            asyncio.create_task(schedule_message_deletion(bot, chat_id, user_id, sent_msg.message_id, 300))
             await asyncio.sleep(0.6) 
         except:
             pass
             
     if current_part < total_parts:
         keyboard = [[InlineKeyboardButton(f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
-        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Bheji gayi files 5 mins me delete ho jayengi.*", reply_markup=InlineKeyboardMarkup(keyboard))
+        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Bheji gayi files 5 mins baad aapke agle action par automatic saaf ho jayengi.*", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await bot.send_message(chat_id=chat_id, text="🎉 **SAARI FILES COMPLETE HO GAYI!** ✅")
         if user_id in USER_STATES: del USER_STATES[user_id]
@@ -428,7 +443,7 @@ ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Vercel Live with Fixed Multi-Token System and Dynamic 5-Min Auto-Delete!", 200
+    return "Vercel Live with Fixed Multi-Token System and Serverless Friendly Auto-Delete!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
@@ -452,7 +467,6 @@ def telegram_webhook():
             return jsonify({"status": "error"}), 200
     return "Method Not Allowed", 400
 
-# 🟢 WSGI export ko simple aur clean rakha taaki Vercel ko directly 'app' mil jaye
 app = app
 
 if __name__ == '__main__':
