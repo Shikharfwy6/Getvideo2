@@ -8,8 +8,8 @@ import string
 import requests
 import os
 import telegram
-from datetime import datetime, timedelta, time
-import pytz  # Raat ke 12 baje IST reset ke liye timezone support
+from datetime import datetime, timedelta
+import pytz  
 from pymongo import MongoClient
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -24,7 +24,7 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot"
-ADMIN_ID = 7559016251  # ✅ Sirf aap hi /p command chala sakte hain
+ADMIN_ID = 7559016251  # ✅ Admin ID
 
 if not BOT_TOKEN or not MONGO_URI:
     print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
@@ -52,7 +52,7 @@ try:
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    print("✅ MongoDB Connected with Vercel Auto-Delete Logic!", flush=True)
+    print("✅ MongoDB Connected with Simple 24h Verification Logic!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
     sys.exit(1)
@@ -72,10 +72,6 @@ IST = pytz.timezone('Asia/Kolkata')
 
 # --- ⏱️ VERCEL CLEANUP FUNCTION ---
 async def clean_expired_files(bot, user_id, chat_id):
-    """
-    Yeh function Vercel par bina soye kaam karega. Jab bhi user bot par active hoga,
-    yeh un sabhi files ko dhoondh kar delete kar dega jinka time (5 mins) poora ho chuka hai.
-    """
     try:
         user = users_col.find_one({"_id": user_id})
         if not user or "active_files" not in user:
@@ -85,7 +81,6 @@ async def clean_expired_files(bot, user_id, chat_id):
         expired_messages = []
 
         for file_info in user["active_files"]:
-            # Agar delete_at ka time nikal chuka hai
             if file_info["delete_at"].replace(tzinfo=pytz.utc) <= now.replace(tzinfo=pytz.utc):
                 msg_id = file_info["message_id"]
                 try:
@@ -95,7 +90,6 @@ async def clean_expired_files(bot, user_id, chat_id):
                     print(f"⚠️ Message {msg_id} already deleted or not found: {e}", flush=True)
                 expired_messages.append(file_info)
 
-        # Jo delete ho gaye unhe database se ek sath hata do
         if expired_messages:
             users_col.update_one(
                 {"_id": user_id},
@@ -118,11 +112,6 @@ def get_short_link(api_name, long_url):
         print(f"❌ Shortener Error ({api_name}): {e}", flush=True)
     return None
 
-def get_ist_midnight():
-    now_ist = datetime.now(IST)
-    midnight = now_ist.replace(hour=23, minute=59, second=59, microsecond=0)
-    return midnight.astimezone(pytz.utc)
-
 def check_user_verification(user_id):
     try:
         user = users_col.find_one({"_id": user_id})
@@ -137,17 +126,8 @@ def check_user_verification(user_id):
                 return False, user
 
             if user.get("status") == "verified":
-                reqs = user.get("available_request", "0")
-                if reqs == "unlimited":
-                    return True, user
-                try:
-                    if int(reqs) > 0:
-                        return True, user
-                except ValueError:
-                    pass
+                return True, user
                 
-                users_col.update_one({"_id": user_id}, {"$set": {"status": "unverified"}})
-                return False, user
             return False, user
     except Exception as e:
         print(f"⚠️ MongoDB Read Fail: {e}", flush=True)
@@ -205,7 +185,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     text_message = update.message.text.strip() if update.message.text else ""
     
-    # 🔄 Har action par pehle expired files ka kachra saaf karo (Vercel Fix)
     await clean_expired_files(bot, user_id, chat_id)
     
     try:
@@ -214,116 +193,66 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             raw_arg = parts[1] if len(parts) > 1 else ""
             
             # --- 1. VERIFICATION CHECKBACK ROUTE ---
-            if raw_arg.startswith("v_"):
-                token_parts = raw_arg.split('_')
-                if len(token_parts) < 3:
-                    await bot.send_message(chat_id=chat_id, text="❌ Invalid verification link format!")
-                    return
-                
-                v_type = token_parts[1]
-                search_query = {"_id": user_id, f"token_{v_type}": raw_arg}
+            if raw_arg.startswith("v_verify_"):
+                search_query = {"_id": user_id, "verification_token": raw_arg}
                 user_record = users_col.find_one(search_query)
                 
                 if user_record:
                     now = datetime.utcnow()
-                    if v_type == "v1":
-                        expire_time = now + timedelta(hours=2)
-                        req_count = "3"
-                        api_used = "arolink"
-                    elif v_type == "v2":
-                        expire_time = now + timedelta(hours=3)
-                        req_count = "5"
-                        api_used = "arolink aur vplink" if "arolink" not in user_record.get("current_api", "") else "vplink"
-                    else:
-                        expire_time = get_ist_midnight() 
-                        req_count = "unlimited"
-                        api_used = "complete" if "vplink" not in user_record.get("current_api", "") else "instalink aur vplink"
+                    expire_time = now + timedelta(hours=24) # 24 Ghante ki validity
 
                     users_col.update_one(
                         {"_id": user_id},
                         {"$set": {
                             "status": "verified",
-                            "current_api": api_used,
                             "User": user_record.get("User", "normal"),
-                            "available_request": req_count,
+                            "available_request": "unlimited",
                             "expire_at": expire_time
                         },
                         "$unset": {
-                            "token_v1": "", "token_v2": "", "token_v3": ""
+                            "verification_token": ""
                         }}
                     )
-                    await bot.send_message(chat_id=chat_id, text=f"✅ **Verification Successful!**\n\nAapko **{req_count} requests** mil gayi hain. 🎉")
+                    await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\n\nAapko **24 Ghante** ke liye **Unlimited Requests** mil gayi hain. 🎉")
                 else:
-                    await bot.send_message(chat_id=chat_id, text="❌ Invalid ya Expired verification token!")
+                    await bot.send_message(chat_id=chat_id, text="❌ Invalid ya Expired verification link!")
                 return
 
             # --- 2. MAIN REQUEST PROCESSOR ---
             is_verified, user_data = check_user_verification(user_id)
             
             if not is_verified:
-                current_api_status = user_data.get("current_api", "") if user_data else ""
                 current_user_type = user_data.get("User", "normal") if user_data else "normal"
                 
-                keyboard = []
                 unique_base = generate_random_token()
+                token_v = f"v_verify_{unique_base}"
                 
-                has_done_v1 = "arolink" in current_api_status
-                has_done_v2 = "vplink" in current_api_status or "complete" in current_api_status
-
-                db_updates = {
-                    "status": "unverified",
-                    "User": current_user_type,
-                    "available_request": "3,5,unlimited"
-                }
-
-                if not has_done_v1 and not has_done_v2:
-                    t_v1 = f"v_v1_{unique_base}"
-                    db_updates["token_v1"] = t_v1
-                    dest_v1 = f"https://t.me/{BOT_USERNAME}?start={t_v1}"
-                    link_v1 = make_nested_link(["arolinks"], dest_v1)
-                    keyboard.append([InlineKeyboardButton("🔐 Verify 1 (4 Page Ads | 3 Req | 2 Hours)", url=link_v1)])
+                dest_url = f"https://t.me/{BOT_USERNAME}?start={token_v}"
                 
-                if not has_done_v2:
-                    t_v2 = f"v_v2_{unique_base}"
-                    db_updates["token_v2"] = t_v2
-                    dest_v2 = f"https://t.me/{BOT_USERNAME}?start={t_v2}"
-                    steps_v2 = ["vplink"] if has_done_v1 else ["arolinks", "vplink"]
-                    link_v2 = make_nested_link(steps_v2, dest_v2)
-                    text_v2 = "🔐 Verify 2 (4 Page Ads | 5 Req | 3 Hours)" if has_done_v1 else "🔐 Verify 2 (8 Page Ads | 5 Req | 3 Hours)"
-                    keyboard.append([InlineKeyboardButton(text_v2, url=link_v2)])
+                # Teeno shorteners ko ek he link me chain kar diya
+                final_short_link = make_nested_link(["arolinks", "vplink", "instantlinks"], dest_url)
+                
+                keyboard = [[InlineKeyboardButton("🔐 Click Here to Verify (24h Access)", url=final_short_link)]]
 
-                t_v3 = f"v_v3_{unique_base}"
-                db_updates["token_v3"] = t_v3
-                dest_v3 = f"https://t.me/{BOT_USERNAME}?start={t_v3}"
-                steps_v3 = ["vplink", "instantlinks"] if has_done_v2 else ["arolinks", "vplink", "instantlinks"]
-                link_v3 = make_nested_link(steps_v3, dest_v3)
-                text_v3 = "🔐 Verify 3 (4 Page Ads | Unlimited Requests | 24h)" if has_done_v2 else "🔐 Verify 3 (12 Page Ads | Unlimited Requests | 24h)"
-                keyboard.append([InlineKeyboardButton(text_v3, url=link_v3)])
-
-                users_col.update_one({"_id": user_id}, {"$set": db_updates}, upsert=True)
-
-                if not keyboard:
-                    users_col.update_one({"_id": user_id}, {"$set": {"current_api": ""}})
-                    await bot.send_message(chat_id=chat_id, text="🔄 Session refresh ho gaya hai. Dobara try karein.")
-                    return
+                users_col.update_one(
+                    {"_id": user_id}, 
+                    {"$set": {
+                        "status": "unverified",
+                        "User": current_user_type,
+                        "verification_token": token_v,
+                        "available_request": "unlimited"
+                    }}, 
+                    upsert=True
+                )
 
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="⚠️ **Access Denied!**\n\nAapko file paane ke liye kisi ek Option se verify karna hoga:",
+                    text="⚠️ **Access Denied!**\n\nBot ko use karne ke liye niche diye gaye button par click karke verify karein. Yeh verification **24 ghante** ke liye valid rahega:",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 return
 
-            # --- 3. DEDUCT REQUEST & DELIVER CONTENT ---
-            if user_data.get("User") != "premium":
-                reqs = user_data.get("available_request", "0")
-                if reqs != "unlimited":
-                    try:
-                        new_reqs = str(max(0, int(reqs) - 1))
-                        users_col.update_one({"_id": user_id}, {"$set": {"available_request": new_reqs}})
-                    except:
-                        pass
-
+            # --- 3. DELIVER CONTENT ---
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
             
             # Batch Mode
@@ -349,7 +278,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     now = datetime.utcnow()
                     delete_at = now + timedelta(minutes=5)
                     
-                    # Log to MongoDB
                     users_col.update_one(
                         {"_id": user_id},
                         {"$push": {
@@ -361,7 +289,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                         }}
                     )
             else:
-                await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka verification active hai.")
+                await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka 24-hour verification active hai.")
             return
     except Exception as err:
         print(f"❌ Error in message handler: {err}", flush=True)
@@ -374,12 +302,11 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = query.message.chat_id
     await query.answer()
     
-    # Clean files on button click too
     await clean_expired_files(context.bot, user_id, chat_id)
     
     is_verified, _ = check_user_verification(user_id)
     if not is_verified:
-        await query.message.reply_text("⏰ Session expired ya requests limit khatam! Dobara verify karein.")
+        await query.message.reply_text("⏰ Aapka 24-hour session expire ho gaya hai! Kripya dobara verify karein.")
         return
 
     if query.data == "get_next_part":
@@ -412,8 +339,6 @@ async def send_video_batch(chat_id, bot, user_id):
     for msg_id in current_batch:
         try:
             sent_msg = await bot.copy_message(chat_id=chat_id, from_chat_id=target_ch, message_id=msg_id)
-            
-            # Har file ka timestamp list me store hoga dynamically
             users_col.update_one(
                 {"_id": user_id},
                 {"$push": {
@@ -443,7 +368,7 @@ ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Vercel Live with Fixed Multi-Token System and Serverless Friendly Auto-Delete!", 200
+    return "Bot is running with simplified 24h verification!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
