@@ -24,14 +24,14 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot"
-ADMIN_ID = 7559016251  # ✅ Admin ID
+ADMIN_ID = 8838634478  # ✅ Admin ID
 
 if not BOT_TOKEN or not MONGO_URI:
     print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
     sys.exit(1)
 
 CHANNELS = {
-    "1": "-1003952628014",
+    "1": "-1004435774367",
     "2": "-1003758252316",
     "3": "-1003307449853",
     "4": "-1003195006898",
