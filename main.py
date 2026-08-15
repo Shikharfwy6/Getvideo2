@@ -41,10 +41,9 @@ CHANNELS = {
     "8": "-1003211122364"
 }
 
+# 🎯 Sirf VPLink shortener rakha gaya hai
 SHORTENERS = {
-    "arolinks": "https://arolinks.com/api?api=f4617908b561110a219cd2b65bc255c2c2c6ff8a&url={url}",
-    "vplink": "https://vplink.in/api?api=017ab25e4402465d00047e8e2897f3c6b38afbd9&url={url}",
-    "instantlinks": "https://instantlinks.co/api?api=323c4585c0d0b8bc04a170cd57a2e6a74ac6d8aa&url={url}"
+    "vplink": "https://vplink.in/api?api=017ab25e4402465d00047e8e2897f3c6b38afbd9&url={url}"
 }
 
 # --- MONGODB SETUP ---
@@ -229,8 +228,8 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 
                 dest_url = f"https://t.me/{BOT_USERNAME}?start={token_v}"
                 
-                # Teeno shorteners ko ek he link me chain kar diya
-                final_short_link = make_nested_link(["arolinks", "vplink", "instantlinks"], dest_url)
+                # 🎯 Sirf vplink ko call kiya jaa raha hai
+                final_short_link = make_nested_link(["vplink"], dest_url)
                 
                 keyboard = [[InlineKeyboardButton("🔐 Click Here to Verify (24h Access)", url=final_short_link)]]
 
