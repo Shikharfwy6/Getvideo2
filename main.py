@@ -25,6 +25,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot"
 ADMIN_ID = 8838634478  # ✅ Admin ID
+FORCE_SUB_CHANNEL = -1003624680009  # 🔒 Force Subscribe Channel ID
 
 if not BOT_TOKEN or not MONGO_URI:
     print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
@@ -41,7 +42,7 @@ CHANNELS = {
     "8": "-1003211122364"
 }
 
-# 🎯 Sirf VPLink shortener rakha gaya hai
+# 🎯 Sirf VPLink shortener
 SHORTENERS = {
     "vplink": "https://vplink.in/api?api=017ab25e4402465d00047e8e2897f3c6b38afbd9&url={url}"
 }
@@ -68,6 +69,18 @@ ptb_app.bot._username = BOT_USERNAME
 ptb_app.bot._bot_user = telegram.User(id=int(BOT_TOKEN.split(':')[0]), is_bot=True, first_name="Getvideo", username=BOT_USERNAME)
 
 IST = pytz.timezone('Asia/Kolkata')
+
+# --- 🔒 FORCE SUBSCRIBE CHECK FUNCTION ---
+async def is_user_subscribed(bot, user_id):
+    try:
+        member = await bot.get_chat_member(chat_id=FORCE_SUB_CHANNEL, user_id=user_id)
+        if member.status in ['creator', 'administrator', 'member']:
+            return True
+        return False
+    except Exception as e:
+        print(f"⚠️ Force Sub Check Error (Make sure bot is admin in channel): {e}", flush=True)
+        # Agar error aaye to bypass nahi karte (aap isko True bhi kar sakte ho agar fallback chahiye)
+        return False
 
 # --- ⏱️ VERCEL CLEANUP FUNCTION ---
 async def clean_expired_files(bot, user_id, chat_id):
@@ -184,6 +197,29 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     text_message = update.message.text.strip() if update.message.text else ""
     
+    # 🚨 1. FORCE SUBSCRIBE CHECK 🚨
+    if not await is_user_subscribed(bot, user_id):
+        try:
+            chat_info = await bot.get_chat(FORCE_SUB_CHANNEL)
+            invite_link = chat_info.invite_link or f"https://t.me/c/{str(FORCE_SUB_CHANNEL)[4:]}"
+        except Exception:
+            invite_link = "https://t.me"
+
+        # Try again link taaki user join karke dubara start press kar sake
+        start_param = text_message.split()[1] if len(text_message.split()) > 1 else ""
+        try_again_url = f"https://t.me/{BOT_USERNAME}?start={start_param}" if start_param else f"https://t.me/{BOT_USERNAME}"
+
+        keyboard = [
+            [InlineKeyboardButton("📢 Join Channel First", url=invite_link)],
+            [InlineKeyboardButton("🔄 Try Again", url=try_again_url)]
+        ]
+        await bot.send_message(
+            chat_id=chat_id,
+            text="❌ **Access Denied!**\n\nBot ko use karne ke liye pehle hamare official channel ko join karein. Join karne ke baad **Try Again** par click karein.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
     await clean_expired_files(bot, user_id, chat_id)
     
     try:
@@ -191,7 +227,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             parts = text_message.split()
             raw_arg = parts[1] if len(parts) > 1 else ""
             
-            # --- 1. VERIFICATION CHECKBACK ROUTE ---
+            # --- 2. VERIFICATION CHECKBACK ROUTE ---
             if raw_arg.startswith("v_verify_"):
                 search_query = {"_id": user_id, "verification_token": raw_arg}
                 user_record = users_col.find_one(search_query)
@@ -217,7 +253,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     await bot.send_message(chat_id=chat_id, text="❌ Invalid ya Expired verification link!")
                 return
 
-            # --- 2. MAIN REQUEST PROCESSOR ---
+            # --- 3. MAIN REQUEST PROCESSOR ---
             is_verified, user_data = check_user_verification(user_id)
             
             if not is_verified:
@@ -228,7 +264,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 
                 dest_url = f"https://t.me/{BOT_USERNAME}?start={token_v}"
                 
-                # 🎯 Sirf vplink ko call kiya jaa raha hai
+                # Sirf VPLink use ho raha hai
                 final_short_link = make_nested_link(["vplink"], dest_url)
                 
                 keyboard = [[InlineKeyboardButton("🔐 Click Here to Verify (24h Access)", url=final_short_link)]]
@@ -251,7 +287,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
                 return
 
-            # --- 3. DELIVER CONTENT ---
+            # --- 4. DELIVER CONTENT ---
             extracted_args = raw_arg.split('_') if "_" in raw_arg else [raw_arg]
             
             # Batch Mode
@@ -301,6 +337,11 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = query.message.chat_id
     await query.answer()
     
+    # Force Subscribe Check on Buttons
+    if not await is_user_subscribed(context.bot, user_id):
+        await query.message.reply_text("❌ Aapne mandatory channel join nahi kiya hai! Pehle channel subscribe karein.")
+        return
+
     await clean_expired_files(context.bot, user_id, chat_id)
     
     is_verified, _ = check_user_verification(user_id)
