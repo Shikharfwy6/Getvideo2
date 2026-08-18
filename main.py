@@ -26,8 +26,8 @@ ADMIN_ID = 8838634478  # ✅ Admin ID
 # 🔒 MULTI-CHANNEL FORCE SUBSCRIBE CONFIGURATION
 # id: Channel ID (-100xxxx), name: Button text, link: Channel Invite Link (Normal ya Request to join)
 FORCE_SUB_CHANNELS = [
-    {"id": -1003624680009, "name": "📢 Main Channel", "link": "https://t.me/your_main_channel"},
-    {"id": -1001234567890, "name": "🔒 Backup Channel (Req to Join)", "link": "https://t.me/+YourRequestJoinLink"}
+    {"id": -1003624680009, "name": "📢 Main Channel", "link": "https://t.me/+yEAehCig4almOTY1"},
+    {"id": -1004458558155, "name": "🔒 Backup Channel (Req to Join)", "link": "https://t.me/+rfqDOaNEnuIyMDdl"}
 ]
 
 if not BOT_TOKEN or not MONGO_URI:
