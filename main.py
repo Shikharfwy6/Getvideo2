@@ -3,9 +3,6 @@ import asyncio
 import sys
 import traceback
 import math
-import secrets
-import string
-import requests
 import os
 import telegram
 from datetime import datetime, timedelta
@@ -42,26 +39,18 @@ CHANNELS = {
     "8": "-1003211122364"
 }
 
-# 🎯 Sirf VPLink shortener
-SHORTENERS = {
-    "vplink": "https://vplink.in/api?api=017ab25e4402465d00047e8e2897f3c6b38afbd9&url={url}"
-}
-
 # --- MONGODB SETUP ---
 try:
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    print("✅ MongoDB Connected with Simple 24h Verification Logic!", flush=True)
+    settings_col = db["settings"] # ✅ Collection for storing daily link
+    print("✅ MongoDB Connected Successfully!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
     sys.exit(1)
 
 USER_STATES = {}
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-})
 
 app = Flask(__name__)
 ptb_app = Application.builder().token(BOT_TOKEN).build()
@@ -78,8 +67,7 @@ async def is_user_subscribed(bot, user_id):
             return True
         return False
     except Exception as e:
-        print(f"⚠️ Force Sub Check Error (Make sure bot is admin in channel): {e}", flush=True)
-        # Agar error aaye to bypass nahi karte (aap isko True bhi kar sakte ho agar fallback chahiye)
+        print(f"⚠️ Force Sub Check Error: {e}", flush=True)
         return False
 
 # --- ⏱️ VERCEL CLEANUP FUNCTION ---
@@ -111,19 +99,6 @@ async def clean_expired_files(bot, user_id, chat_id):
         print(f"❌ Error in clean_expired_files: {e}", flush=True)
 
 # --- HELPER FUNCTIONS ---
-def get_short_link(api_name, long_url):
-    try:
-        api_url = SHORTENERS[api_name].format(url=long_url)
-        response = session.get(api_url, timeout=5)
-        if response.status_code == 200:
-            res_text = response.text.strip()
-            if "https://" in res_text or "http://" in res_text:
-                return res_text
-            return response.json().get("shortenedUrl", None)
-    except Exception as e:
-        print(f"❌ Shortener Error ({api_name}): {e}", flush=True)
-    return None
-
 def check_user_verification(user_id):
     try:
         user = users_col.find_one({"_id": user_id})
@@ -145,20 +120,33 @@ def check_user_verification(user_id):
         print(f"⚠️ MongoDB Read Fail: {e}", flush=True)
     return False, None
 
-def generate_random_token(length=12):
-    return "v_" + ''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(length))
+# DB se active link lene ka function
+def get_today_link():
+    setting = settings_col.find_one({"_id": "today_link"})
+    if setting and "link" in setting:
+        return setting["link"]
+    return None
 
-def make_nested_link(steps, target_url):
-    current_url = target_url
-    for step in steps:
-        short = get_short_link(step, current_url)
-        if short:
-            current_url = short
-        else:
-            print(f"⚠️ Chain shortener failed for {step}, bypassing step.", flush=True)
-    return current_url
+# --- ADMIN COMMAND (/todaylink) ---
+async def handle_todaylink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Unauthorized!")
+        return
 
-# --- ADMIN COMMAND HANDLER (/p) ---
+    if not context.args:
+        await update.message.reply_text("💡 **Sahi Format:** `/todaylink https://vplink.in/ABVYU`")
+        return
+
+    new_link = context.args[0].strip()
+    settings_col.update_one(
+        {"_id": "today_link"},
+        {"$set": {"link": new_link, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+    await update.message.reply_text(f"✅ **Today's Link Updated Successfully!**\n\n🔗 Naya Link: {new_link}")
+
+# --- ADMIN COMMAND (/p) ---
 async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -205,7 +193,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             invite_link = "https://t.me"
 
-        # Try again link taaki user join karke dubara start press kar sake
         start_param = text_message.split()[1] if len(text_message.split()) > 1 else ""
         try_again_url = f"https://t.me/{BOT_USERNAME}?start={start_param}" if start_param else f"https://t.me/{BOT_USERNAME}"
 
@@ -227,58 +214,34 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             parts = text_message.split()
             raw_arg = parts[1] if len(parts) > 1 else ""
             
-            # --- 2. VERIFICATION CHECKBACK ROUTE ---
-            if raw_arg.startswith("v_verify_"):
-                search_query = {"_id": user_id, "verification_token": raw_arg}
-                user_record = users_col.find_one(search_query)
-                
-                if user_record:
-                    now = datetime.utcnow()
-                    expire_time = now + timedelta(hours=24) # 24 Ghante ki validity
+            # --- 2. VERIFICATION PROCESS ROUTE ---
+            if raw_arg == "verify":
+                now = datetime.utcnow()
+                expire_time = now + timedelta(hours=24) # 24 Ghante ki validity
 
-                    users_col.update_one(
-                        {"_id": user_id},
-                        {"$set": {
-                            "status": "verified",
-                            "User": user_record.get("User", "normal"),
-                            "available_request": "unlimited",
-                            "expire_at": expire_time
-                        },
-                        "$unset": {
-                            "verification_token": ""
-                        }}
-                    )
-                    await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\n\nAapko **24 Ghante** ke liye **Unlimited Requests** mil gayi hain. 🎉")
-                else:
-                    await bot.send_message(chat_id=chat_id, text="❌ Invalid ya Expired verification link!")
+                users_col.update_one(
+                    {"_id": user_id},
+                    {"$set": {
+                        "status": "verified",
+                        "User": "normal",
+                        "available_request": "unlimited",
+                        "expire_at": expire_time
+                    }},
+                    upsert=True
+                )
+                await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\n\nAapko **24 Ghante** ke liye **Unlimited Requests** mil gayi hain. 🎉")
                 return
 
             # --- 3. MAIN REQUEST PROCESSOR ---
             is_verified, user_data = check_user_verification(user_id)
             
             if not is_verified:
-                current_user_type = user_data.get("User", "normal") if user_data else "normal"
-                
-                unique_base = generate_random_token()
-                token_v = f"v_verify_{unique_base}"
-                
-                dest_url = f"https://t.me/{BOT_USERNAME}?start={token_v}"
-                
-                # Sirf VPLink use ho raha hai
-                final_short_link = make_nested_link(["vplink"], dest_url)
-                
-                keyboard = [[InlineKeyboardButton("🔐 Click Here to Verify (24h Access)", url=final_short_link)]]
+                today_link = get_today_link()
+                if not today_link:
+                    await bot.send_message(chat_id=chat_id, text="⚠️ Admin ne abhi tak aaj ka verification link set nahi kiya hai. Kripya baad me try karein.")
+                    return
 
-                users_col.update_one(
-                    {"_id": user_id}, 
-                    {"$set": {
-                        "status": "unverified",
-                        "User": current_user_type,
-                        "verification_token": token_v,
-                        "available_request": "unlimited"
-                    }}, 
-                    upsert=True
-                )
+                keyboard = [[InlineKeyboardButton("🔐 Click Here to Verify (24h Access)", url=today_link)]]
 
                 await bot.send_message(
                     chat_id=chat_id,
@@ -337,7 +300,6 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = query.message.chat_id
     await query.answer()
     
-    # Force Subscribe Check on Buttons
     if not await is_user_subscribed(context.bot, user_id):
         await query.message.reply_text("❌ Aapne mandatory channel join nahi kiya hai! Pehle channel subscribe karein.")
         return
@@ -401,6 +363,7 @@ async def send_video_batch(chat_id, bot, user_id):
         if user_id in USER_STATES: del USER_STATES[user_id]
 
 # --- HANDLERS REGISTRATION ---
+ptb_app.add_handler(CommandHandler("todaylink", handle_todaylink_command)) # ✅ New Handler
 ptb_app.add_handler(CommandHandler("p", handle_premium_command))
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_text_messages))
@@ -408,7 +371,7 @@ ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running with simplified 24h verification!", 200
+    return "Bot is running with DB stored daily link verification!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
