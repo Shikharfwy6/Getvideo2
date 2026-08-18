@@ -44,7 +44,7 @@ try:
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    settings_col = db["settings"] # ✅ Collection for storing daily link
+    settings_col = db["settings"] # ✅ Settings collection for links & secret verify token
     print("✅ MongoDB Connected Successfully!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
@@ -70,7 +70,7 @@ async def is_user_subscribed(bot, user_id):
         print(f"⚠️ Force Sub Check Error: {e}", flush=True)
         return False
 
-# --- ⏱️ VERCEL CLEANUP FUNCTION ---
+# --- ⏱️ CLEANUP EXPIRED MESSAGES ---
 async def clean_expired_files(bot, user_id, chat_id):
     try:
         user = users_col.find_one({"_id": user_id})
@@ -85,9 +85,8 @@ async def clean_expired_files(bot, user_id, chat_id):
                 msg_id = file_info["message_id"]
                 try:
                     await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                    print(f"🗑️ Cleaned up expired message {msg_id}", flush=True)
-                except Exception as e:
-                    print(f"⚠️ Message {msg_id} already deleted or not found: {e}", flush=True)
+                except Exception:
+                    pass
                 expired_messages.append(file_info)
 
         if expired_messages:
@@ -120,14 +119,15 @@ def check_user_verification(user_id):
         print(f"⚠️ MongoDB Read Fail: {e}", flush=True)
     return False, None
 
-# DB se active link lene ka function
-def get_today_link():
-    setting = settings_col.find_one({"_id": "today_link"})
-    if setting and "link" in setting:
-        return setting["link"]
+def get_setting(key):
+    setting = settings_col.find_one({"_id": key})
+    if setting and "value" in setting:
+        return setting["value"]
     return None
 
-# --- ADMIN COMMAND (/todaylink) ---
+# --- ADMIN COMMANDS ---
+
+# 1. Verification Short Link Setting
 async def handle_todaylink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -135,18 +135,43 @@ async def handle_todaylink_command(update: Update, context: ContextTypes.DEFAULT
         return
 
     if not context.args:
-        await update.message.reply_text("💡 **Sahi Format:** `/todaylink https://vplink.in/ABVYU`")
+        await update.message.reply_text("💡 **Sahi Format:** `/todaylink https://vplink.in/KNrExH`")
         return
 
     new_link = context.args[0].strip()
     settings_col.update_one(
         {"_id": "today_link"},
-        {"$set": {"link": new_link, "updated_at": datetime.utcnow()}},
+        {"$set": {"value": new_link, "updated_at": datetime.utcnow()}},
         upsert=True
     )
-    await update.message.reply_text(f"✅ **Today's Link Updated Successfully!**\n\n🔗 Naya Link: {new_link}")
+    await update.message.reply_text(f"✅ **Today's Short Link Updated!**\n\n🔗 Short Link: `{new_link}`")
 
-# --- ADMIN COMMAND (/p) ---
+# 2. Verification Secret Token Check Setting
+async def handle_todaycheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Unauthorized!")
+        return
+
+    if not context.args:
+        await update.message.reply_text("💡 **Sahi Format:** `/todaycheck https://t.me/Getvideo81827_bot?start=verifyiquahavVahqjqba`\nya fir direct token: `/todaycheck verifyiquahavVahqjqba`")
+        return
+
+    input_text = context.args[0].strip()
+    # Agar poora Telegram URL bhej diya jaye to start= ke baad ka secret nikal lo
+    if "start=" in input_text:
+        secret_token = input_text.split("start=")[-1]
+    else:
+        secret_token = input_text
+
+    settings_col.update_one(
+        {"_id": "today_check_token"},
+        {"$set": {"value": secret_token, "updated_at": datetime.utcnow()}},
+        upsert=True
+    )
+    await update.message.reply_text(f"🔑 **Secret Verification Token Set!**\n\n🎯 Active Token: `{secret_token}`")
+
+# 3. Premium Admin Command
 async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -175,7 +200,7 @@ async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {e}")
 
-# --- COMMAND & TEXT/MEDIA HANDLERS ---
+# --- MAIN MESSAGE & COMMAND HANDLER ---
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -214,8 +239,11 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             parts = text_message.split()
             raw_arg = parts[1] if len(parts) > 1 else ""
             
-            # --- 2. VERIFICATION PROCESS ROUTE ---
-            if raw_arg == "verify":
+            # --- 2. SECRET TOKEN VERIFICATION ROUTE ---
+            active_secret_token = get_setting("today_check_token")
+            
+            # Agar start parameter exact Secret token se match karta hai
+            if active_secret_token and raw_arg == active_secret_token:
                 now = datetime.utcnow()
                 expire_time = now + timedelta(hours=24) # 24 Ghante ki validity
 
@@ -229,23 +257,23 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     }},
                     upsert=True
                 )
-                await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\n\nAapko **24 Ghante** ke liye **Unlimited Requests** mil gayi hain. 🎉")
+                await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\n\nAapko **24 Ghante** ke liye **Unlimited Access** mil gaya hai. 🎉")
                 return
 
-            # --- 3. MAIN REQUEST PROCESSOR ---
+            # --- 3. MAIN REQUEST & ACCESS CHECK ---
             is_verified, user_data = check_user_verification(user_id)
             
             if not is_verified:
-                today_link = get_today_link()
+                today_link = get_setting("today_link")
                 if not today_link:
-                    await bot.send_message(chat_id=chat_id, text="⚠️ Admin ne abhi tak aaj ka verification link set nahi kiya hai. Kripya baad me try karein.")
+                    await bot.send_message(chat_id=chat_id, text="⚠️ Admin ne abhi tak verification link set nahi kiya hai. Kripya baad me try karein.")
                     return
 
                 keyboard = [[InlineKeyboardButton("🔐 Click Here to Verify (24h Access)", url=today_link)]]
 
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="⚠️ **Access Denied!**\n\nBot ko use karne ke liye niche diye gaye button par click karke verify karein. Yeh verification **24 ghante** ke liye valid rahega:",
+                    text="⚠️ **Access Denied!**\n\nBot ko use karne ke liye niche diye gaye button par click karke verify karein. Verification 24 ghante ke liye valid rahega:",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 return
@@ -263,7 +291,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_videos = len(video_list)
                 videos_per_part = math.ceil(total_videos / total_parts)
                 USER_STATES[user_id] = {"video_list": video_list, "target_ch": target_ch, "videos_per_part": videos_per_part, "current_part": 1, "total_parts": total_parts, "total_videos": total_videos}
-                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files milne ke 5 mins baad auto-delete ho jayengi jab aap bot par koi action karenge!*")
+                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files milne ke 5 mins baad auto-delete ho jayengi!*")
                 await send_video_batch(chat_id, bot, user_id)
                 
             # Single File Mode
@@ -357,13 +385,14 @@ async def send_video_batch(chat_id, bot, user_id):
             
     if current_part < total_parts:
         keyboard = [[InlineKeyboardButton(f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
-        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Bheji gayi files 5 mins baad aapke agle action par automatic saaf ho jayengi.*", reply_markup=InlineKeyboardMarkup(keyboard))
+        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Bheji gayi files 5 mins baad automatic delete ho jayengi.*", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await bot.send_message(chat_id=chat_id, text="🎉 **SAARI FILES COMPLETE HO GAYI!** ✅")
         if user_id in USER_STATES: del USER_STATES[user_id]
 
 # --- HANDLERS REGISTRATION ---
-ptb_app.add_handler(CommandHandler("todaylink", handle_todaylink_command)) # ✅ New Handler
+ptb_app.add_handler(CommandHandler("todaylink", handle_todaylink_command))
+ptb_app.add_handler(CommandHandler("todaycheck", handle_todaycheck_command)) # ✅ New Command Handler
 ptb_app.add_handler(CommandHandler("p", handle_premium_command))
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_text_messages))
@@ -371,7 +400,7 @@ ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running with DB stored daily link verification!", 200
+    return "Bot is running with double secret token verification system!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
