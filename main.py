@@ -7,10 +7,10 @@ import os
 import telegram
 from datetime import datetime, timedelta
 import pytz  
-from pymongo import MongoClient
 from flask import Flask, request, jsonify
+from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, ChatJoinRequestHandler, filters, ContextTypes
 
 # --- LOGGING SETUP ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO, stream=sys.stdout)
@@ -22,7 +22,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 BOT_USERNAME = "Getvideo81827_bot"
 ADMIN_ID = 8838634478  # ✅ Admin ID
-FORCE_SUB_CHANNEL = -1003624680009  # 🔒 Force Subscribe Channel ID
+
+# 🔒 MULTI-CHANNEL FORCE SUBSCRIBE CONFIGURATION
+# id: Channel ID (-100xxxx), name: Button text, link: Channel Invite Link (Normal ya Request to join)
+FORCE_SUB_CHANNELS = [
+    {"id": -1003624680009, "name": "📢 Main Channel", "link": "https://t.me/your_main_channel"},
+    {"id": -1001234567890, "name": "🔒 Backup Channel (Req to Join)", "link": "https://t.me/+YourRequestJoinLink"}
+]
 
 if not BOT_TOKEN or not MONGO_URI:
     print("💥 Critical Error: BOT_TOKEN ya MONGO_URI missing hai!", flush=True)
@@ -44,7 +50,8 @@ try:
     mongo_client = MongoClient(MONGO_URI, maxPoolSize=5, minPoolSize=1, waitQueueTimeoutMS=2000, retryWrites=True)
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
-    settings_col = db["settings"] # ✅ Settings collection for links & secret verify token
+    settings_col = db["settings"]
+    requests_col = db["join_requests"]  # ✅ Collection for tracking join requests
     print("✅ MongoDB Connected Successfully!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
@@ -59,16 +66,46 @@ ptb_app.bot._bot_user = telegram.User(id=int(BOT_TOKEN.split(':')[0]), is_bot=Tr
 
 IST = pytz.timezone('Asia/Kolkata')
 
-# --- 🔒 FORCE SUBSCRIBE CHECK FUNCTION ---
-async def is_user_subscribed(bot, user_id):
-    try:
-        member = await bot.get_chat_member(chat_id=FORCE_SUB_CHANNEL, user_id=user_id)
-        if member.status in ['creator', 'administrator', 'member']:
-            return True
-        return False
-    except Exception as e:
-        print(f"⚠️ Force Sub Check Error: {e}", flush=True)
-        return False
+# --- 📩 CHAT JOIN REQUEST HANDLER ---
+async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_join_request = update.chat_join_request
+    if not chat_join_request:
+        return
+    
+    user_id = chat_join_request.from_user.id
+    chat_id = chat_join_request.chat.id
+
+    # Store user join request in MongoDB
+    requests_col.update_one(
+        {"user_id": user_id, "chat_id": chat_id},
+        {"$set": {"requested_at": datetime.utcnow()}},
+        upsert=True
+    )
+
+# --- 🔒 MULTI-CHANNEL FORCE SUBSCRIBE CHECK ---
+async def check_user_subscriptions(bot, user_id):
+    unsubscribed_channels = []
+    
+    for ch in FORCE_SUB_CHANNELS:
+        ch_id = ch["id"]
+        
+        # 1. Check if direct member/admin/creator
+        try:
+            member = await bot.get_chat_member(chat_id=ch_id, user_id=user_id)
+            if member.status in ['creator', 'administrator', 'member']:
+                continue
+        except Exception:
+            pass
+
+        # 2. Check if user sent a "Request to Join"
+        has_requested = requests_col.find_one({"user_id": user_id, "chat_id": ch_id})
+        if has_requested:
+            continue
+
+        # If neither subscribed nor requested, add to pending list
+        unsubscribed_channels.append(ch)
+
+    return unsubscribed_channels
 
 # --- ⏱️ CLEANUP EXPIRED MESSAGES ---
 async def clean_expired_files(bot, user_id, chat_id):
@@ -126,8 +163,6 @@ def get_setting(key):
     return None
 
 # --- ADMIN COMMANDS ---
-
-# 1. Verification Short Link Setting
 async def handle_todaylink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -146,7 +181,6 @@ async def handle_todaylink_command(update: Update, context: ContextTypes.DEFAULT
     )
     await update.message.reply_text(f"✅ **Today's Short Link Updated!**\n\n🔗 Short Link: `{new_link}`")
 
-# 2. Verification Secret Token Check Setting
 async def handle_todaycheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -154,15 +188,11 @@ async def handle_todaycheck_command(update: Update, context: ContextTypes.DEFAUL
         return
 
     if not context.args:
-        await update.message.reply_text("💡 **Sahi Format:** `/todaycheck https://t.me/Getvideo81827_bot?start=verifyiquahavVahqjqba`\nya fir direct token: `/todaycheck verifyiquahavVahqjqba`")
+        await update.message.reply_text("💡 **Sahi Format:** `/todaycheck verifyiquahavVahqjqba`")
         return
 
     input_text = context.args[0].strip()
-    # Agar poora Telegram URL bhej diya jaye to start= ke baad ka secret nikal lo
-    if "start=" in input_text:
-        secret_token = input_text.split("start=")[-1]
-    else:
-        secret_token = input_text
+    secret_token = input_text.split("start=")[-1] if "start=" in input_text else input_text
 
     settings_col.update_one(
         {"_id": "today_check_token"},
@@ -171,7 +201,6 @@ async def handle_todaycheck_command(update: Update, context: ContextTypes.DEFAUL
     )
     await update.message.reply_text(f"🔑 **Secret Verification Token Set!**\n\n🎯 Active Token: `{secret_token}`")
 
-# 3. Premium Admin Command
 async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -210,24 +239,20 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     text_message = update.message.text.strip() if update.message.text else ""
     
-    # 🚨 1. FORCE SUBSCRIBE CHECK 🚨
-    if not await is_user_subscribed(bot, user_id):
-        try:
-            chat_info = await bot.get_chat(FORCE_SUB_CHANNEL)
-            invite_link = chat_info.invite_link or f"https://t.me/c/{str(FORCE_SUB_CHANNEL)[4:]}"
-        except Exception:
-            invite_link = "https://t.me"
-
+    # 🚨 1. MULTI-CHANNEL FORCE SUBSCRIBE CHECK 🚨
+    unsubscribed = await check_user_subscriptions(bot, user_id)
+    if unsubscribed:
+        keyboard = []
+        for ch in unsubscribed:
+            keyboard.append([InlineKeyboardButton(f"🔗 Join {ch['name']}", url=ch["link"])])
+        
         start_param = text_message.split()[1] if len(text_message.split()) > 1 else ""
         try_again_url = f"https://t.me/{BOT_USERNAME}?start={start_param}" if start_param else f"https://t.me/{BOT_USERNAME}"
+        keyboard.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
 
-        keyboard = [
-            [InlineKeyboardButton("📢 Join Channel First", url=invite_link)],
-            [InlineKeyboardButton("🔄 Try Again", url=try_again_url)]
-        ]
         await bot.send_message(
             chat_id=chat_id,
-            text="❌ **Access Denied!**\n\nBot ko use karne ke liye pehle hamare official channel ko join karein. Join karne ke baad **Try Again** par click karein.",
+            text="❌ **Access Denied!**\n\nBot ko use karne ke liye neeche diye gaye saare channels ko join karein ya Request Bhejein. Phir **Try Again** par click karein.",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -242,10 +267,9 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             # --- 2. SECRET TOKEN VERIFICATION ROUTE ---
             active_secret_token = get_setting("today_check_token")
             
-            # Agar start parameter exact Secret token se match karta hai
             if active_secret_token and raw_arg == active_secret_token:
                 now = datetime.utcnow()
-                expire_time = now + timedelta(hours=24) # 24 Ghante ki validity
+                expire_time = now + timedelta(hours=24)
 
                 users_col.update_one(
                     {"_id": user_id},
@@ -328,8 +352,9 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = query.message.chat_id
     await query.answer()
     
-    if not await is_user_subscribed(context.bot, user_id):
-        await query.message.reply_text("❌ Aapne mandatory channel join nahi kiya hai! Pehle channel subscribe karein.")
+    unsubscribed = await check_user_subscriptions(context.bot, user_id)
+    if unsubscribed:
+        await query.message.reply_text("❌ Aapne saare mandatory channels join nahi kiye hain!")
         return
 
     await clean_expired_files(context.bot, user_id, chat_id)
@@ -391,8 +416,9 @@ async def send_video_batch(chat_id, bot, user_id):
         if user_id in USER_STATES: del USER_STATES[user_id]
 
 # --- HANDLERS REGISTRATION ---
+ptb_app.add_handler(ChatJoinRequestHandler(handle_join_request))  # ✅ Dynamic Join Request Handler Added
 ptb_app.add_handler(CommandHandler("todaylink", handle_todaylink_command))
-ptb_app.add_handler(CommandHandler("todaycheck", handle_todaycheck_command)) # ✅ New Command Handler
+ptb_app.add_handler(CommandHandler("todaycheck", handle_todaycheck_command))
 ptb_app.add_handler(CommandHandler("p", handle_premium_command))
 ptb_app.add_handler(CommandHandler("start", handle_text_messages))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_text_messages))
@@ -400,7 +426,7 @@ ptb_app.add_handler(CallbackQueryHandler(handle_button_clicks))
 
 @app.route('/', methods=['GET'])
 def index():
-    return "Bot is running with double secret token verification system!", 200
+    return "Bot is running with Multi-Force Subscribe & Join Request Support!", 200
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
