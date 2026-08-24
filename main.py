@@ -24,7 +24,6 @@ BOT_USERNAME = "Getvideo81827_bot"
 ADMIN_ID = 8838634478  # ✅ Admin ID
 
 # 🔒 MULTI-CHANNEL FORCE SUBSCRIBE CONFIGURATION
-# id: Channel ID (-100xxxx), name: Button text, link: Channel Invite Link (Normal ya Request to join)
 FORCE_SUB_CHANNELS = [
     {"id": -1003624680009, "name": "📢 Main Channel", "link": "https://t.me/+yEAehCig4almOTY1"},
     {"id": -1004458558155, "name": "🔒 Backup Channel (Req to Join)", "link": "https://t.me/+rfqDOaNEnuIyMDdl"}
@@ -51,7 +50,7 @@ try:
     db = mongo_client["cluster_bot_db"]
     users_col = db["verified_users"]
     settings_col = db["settings"]
-    requests_col = db["join_requests"]  # ✅ Collection for tracking join requests
+    requests_col = db["join_requests"]
     print("✅ MongoDB Connected Successfully!", flush=True)
 except Exception as e:
     print(f"💥 MongoDB Connection Error: {e}", flush=True)
@@ -75,7 +74,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = chat_join_request.from_user.id
     chat_id = chat_join_request.chat.id
 
-    # Store user join request in MongoDB
     requests_col.update_one(
         {"user_id": user_id, "chat_id": chat_id},
         {"$set": {"requested_at": datetime.utcnow()}},
@@ -88,22 +86,24 @@ async def check_user_subscriptions(bot, user_id):
     
     for ch in FORCE_SUB_CHANNELS:
         ch_id = ch["id"]
+        is_subscribed = False
         
-        # 1. Check if direct member/admin/creator
+        # 1. Direct Membership Check
         try:
             member = await bot.get_chat_member(chat_id=ch_id, user_id=user_id)
             if member.status in ['creator', 'administrator', 'member']:
-                continue
+                is_subscribed = True
         except Exception:
             pass
 
-        # 2. Check if user sent a "Request to Join"
-        has_requested = requests_col.find_one({"user_id": user_id, "chat_id": ch_id})
-        if has_requested:
-            continue
+        # 2. Join Request Check (Backup)
+        if not is_subscribed:
+            has_requested = requests_col.find_one({"user_id": user_id, "chat_id": ch_id})
+            if has_requested:
+                is_subscribed = True
 
-        # If neither subscribed nor requested, add to pending list
-        unsubscribed_channels.append(ch)
+        if not is_subscribed:
+            unsubscribed_channels.append(ch)
 
     return unsubscribed_channels
 
@@ -170,7 +170,7 @@ async def handle_todaylink_command(update: Update, context: ContextTypes.DEFAULT
         return
 
     if not context.args:
-        await update.message.reply_text("💡 **Sahi Format:** `/todaylink https://vplink.in/KNrExH`")
+        await update.message.reply_text("💡 **Sahi Format:** `/todaylink https://vplink.in/KNrExH`", parse_mode="Markdown")
         return
 
     new_link = context.args[0].strip()
@@ -179,7 +179,7 @@ async def handle_todaylink_command(update: Update, context: ContextTypes.DEFAULT
         {"$set": {"value": new_link, "updated_at": datetime.utcnow()}},
         upsert=True
     )
-    await update.message.reply_text(f"✅ **Today's Short Link Updated!**\n\n🔗 Short Link: `{new_link}`")
+    await update.message.reply_text(f"✅ **Today's Short Link Updated!**\n\n🔗 Short Link: `{new_link}`", parse_mode="Markdown")
 
 async def handle_todaycheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -188,7 +188,7 @@ async def handle_todaycheck_command(update: Update, context: ContextTypes.DEFAUL
         return
 
     if not context.args:
-        await update.message.reply_text("💡 **Sahi Format:** `/todaycheck verifyiquahavVahqjqba`")
+        await update.message.reply_text("💡 **Sahi Format:** `/todaycheck verifyiquahavVahqjqba`", parse_mode="Markdown")
         return
 
     input_text = context.args[0].strip()
@@ -199,7 +199,7 @@ async def handle_todaycheck_command(update: Update, context: ContextTypes.DEFAUL
         {"$set": {"value": secret_token, "updated_at": datetime.utcnow()}},
         upsert=True
     )
-    await update.message.reply_text(f"🔑 **Secret Verification Token Set!**\n\n🎯 Active Token: `{secret_token}`")
+    await update.message.reply_text(f"🔑 **Secret Verification Token Set!**\n\n🎯 Active Token: `{secret_token}`", parse_mode="Markdown")
 
 async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -208,7 +208,7 @@ async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     if not context.args:
-        await update.message.reply_text("💡 **Sahi Format:** `/p target_user_id`")
+        await update.message.reply_text("💡 **Sahi Format:** `/p target_user_id`", parse_mode="Markdown")
         return
 
     try:
@@ -223,7 +223,7 @@ async def handle_premium_command(update: Update, context: ContextTypes.DEFAULT_T
             }},
             upsert=True
         )
-        await update.message.reply_text(f"👑 **Success!** User `{target_uid}` ko lifelong **Premium** member bana diya gaya hai.")
+        await update.message.reply_text(f"👑 **Success!** User `{target_uid}` ko lifelong **Premium** member bana diya gaya hai.", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("❌ Invalid User ID!")
     except Exception as e:
@@ -244,16 +244,17 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     if unsubscribed:
         keyboard = []
         for ch in unsubscribed:
-            keyboard.append([InlineKeyboardButton(f"🔗 Join {ch['name']}", url=ch["link"])])
+            keyboard.append([InlineKeyboardButton(text=f"🔗 Join {ch['name']}", url=ch["link"])])
         
-        start_param = text_message.split()[1] if len(text_message.split()) > 1 else ""
+        start_param = text_message.split()[1] if (text_message.startswith("/start") and len(text_message.split()) > 1) else ""
         try_again_url = f"https://t.me/{BOT_USERNAME}?start={start_param}" if start_param else f"https://t.me/{BOT_USERNAME}"
-        keyboard.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
+        keyboard.append([InlineKeyboardButton(text="🔄 Try Again", url=try_again_url)])
 
         await bot.send_message(
             chat_id=chat_id,
-            text="❌ **Access Denied!**\n\nBot ko use karne ke liye neeche diye gaye saare channels ko join karein ya Request Bhejein. Phir **Try Again** par click karein.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            text="❌ **Access Denied!**\n\nBot ko use karne ke liye neeche diye gaye sabhi channels ko join karein ya Request Bhejein. Phir **Try Again** par click karein.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
         )
         return
 
@@ -281,7 +282,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     }},
                     upsert=True
                 )
-                await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\n\nAapko **24 Ghante** ke liye **Unlimited Access** mil gaya hai. 🎉")
+                await bot.send_message(chat_id=chat_id, text="✅ **Verification Successful!**\n\nAapko **24 Ghante** ke liye **Unlimited Access** mil gaya hai. 🎉", parse_mode="Markdown")
                 return
 
             # --- 3. MAIN REQUEST & ACCESS CHECK ---
@@ -293,12 +294,13 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     await bot.send_message(chat_id=chat_id, text="⚠️ Admin ne abhi tak verification link set nahi kiya hai. Kripya baad me try karein.")
                     return
 
-                keyboard = [[InlineKeyboardButton("🔐 Click Here to Verify (24h Access)", url=today_link)]]
+                keyboard = [[InlineKeyboardButton(text="🔐 Click Here to Verify (24h Access)", url=today_link)]]
 
                 await bot.send_message(
                     chat_id=chat_id,
                     text="⚠️ **Access Denied!**\n\nBot ko use karne ke liye niche diye gaye button par click karke verify karein. Verification 24 ghante ke liye valid rahega:",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown"
                 )
                 return
 
@@ -315,7 +317,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 total_videos = len(video_list)
                 videos_per_part = math.ceil(total_videos / total_parts)
                 USER_STATES[user_id] = {"video_list": video_list, "target_ch": target_ch, "videos_per_part": videos_per_part, "current_part": 1, "total_parts": total_parts, "total_videos": total_videos}
-                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files milne ke 5 mins baad auto-delete ho jayengi!*")
+                await bot.send_message(chat_id=chat_id, text=f"📊 **Verification Valid!**\nTotal Files: `{total_videos}`\n\n⚠️ *Note: Saari files milne ke 5 mins baad auto-delete ho jayengi!*", parse_mode="Markdown")
                 await send_video_batch(chat_id, bot, user_id)
                 
             # Single File Mode
@@ -339,7 +341,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                         }}
                     )
             else:
-                await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka 24-hour verification active hai.")
+                await bot.send_message(chat_id=chat_id, text="👋 **Welcome Back!**\nAapka 24-hour verification active hai.", parse_mode="Markdown")
             return
     except Exception as err:
         print(f"❌ Error in message handler: {err}", flush=True)
@@ -373,7 +375,7 @@ async def handle_button_clicks(update: Update, context: ContextTypes.DEFAULT_TYP
             del USER_STATES[user_id]
             return
         state["current_part"] = current_part
-        await query.message.reply_text(f"📦 **Part {current_part} shuru ho raha hai...**")
+        await query.message.reply_text(f"📦 **Part {current_part} shuru ho raha hai...**", parse_mode="Markdown")
         await send_video_batch(chat_id, context.bot, user_id)
 
 async def send_video_batch(chat_id, bot, user_id):
@@ -409,14 +411,14 @@ async def send_video_batch(chat_id, bot, user_id):
             pass
             
     if current_part < total_parts:
-        keyboard = [[InlineKeyboardButton(f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
-        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Bheji gayi files 5 mins baad automatic delete ho jayengi.*", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton(text=f"➡️ Get Part {current_part + 1}", callback_data="get_next_part")]]
+        await bot.send_message(chat_id=chat_id, text=f"⏸️ **Part {current_part} complete!**\n*Bheji gayi files 5 mins baad automatic delete ho jayengi.*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await bot.send_message(chat_id=chat_id, text="🎉 **SAARI FILES COMPLETE HO GAYI!** ✅")
+        await bot.send_message(chat_id=chat_id, text="🎉 **SAARI FILES COMPLETE HO GAYI!** ✅", parse_mode="Markdown")
         if user_id in USER_STATES: del USER_STATES[user_id]
 
 # --- HANDLERS REGISTRATION ---
-ptb_app.add_handler(ChatJoinRequestHandler(handle_join_request))  # ✅ Dynamic Join Request Handler Added
+ptb_app.add_handler(ChatJoinRequestHandler(handle_join_request))
 ptb_app.add_handler(CommandHandler("todaylink", handle_todaylink_command))
 ptb_app.add_handler(CommandHandler("todaycheck", handle_todaycheck_command))
 ptb_app.add_handler(CommandHandler("p", handle_premium_command))
