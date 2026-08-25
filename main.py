@@ -29,6 +29,7 @@ FORCE_SUB_CHANNELS = [
     {"id": -1004458558155, "name": "🫦 star pon", "link": "https://t.me/+L_r1SY_r07RhMDc1"},
     {"id": -1004452620478, "name": "🥶 onlyfans pack", "link": "https://t.me/+OyuuQfnpVfs0YjBl"},
     {"id": -1004396651064, "name": "🤑 loot deal", "link": "https://t.me/viral_loot_deel"},
+    {"id": -1004435393426, "name": "💌 chat room", "link": "https://t.me/+pHNCPlSxxVRjOTE1"},
     {"id":-1004388792542 , "name": "🔒 Backup Channel (Req to Join)", "link": "https://t.me/+rJd4rqqhE0U2YzU1"}
 ]
 
